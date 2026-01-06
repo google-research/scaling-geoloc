@@ -1,0 +1,184 @@
+"""SV-aerial alignment config with cell codes."""
+
+from typing import Any
+
+import ml_collections
+
+from scaling_geoloc.scenic.configs import defaults
+from scaling_geoloc.scenic.configs import sv_aerial
+
+
+def apply_locations(
+    location: str,
+    config: ml_collections.ConfigDict,
+    batch_size: int = 8,
+    num_workers: int = 8,
+):
+  """Applies locations to config."""
+
+  if location.startswith('bedenl'):
+    config.test_evals.bedenl_cc = defaults.cell_code_retrieval(
+        batch_size * config.get_ref('device_count'),
+        num_workers,
+        'retrieval_l14_split',
+        'test',
+        [location],
+    )
+    config.test_evals.bedenl_cc.num_samples = 100_000
+    config.test_evals.bedenl_cc.eval_interval = 20_000
+    config.test_evals.bedenl_cc.valid_distance_threshold = 500  # meters
+
+    config.test_evals.bedenl_acc = defaults.cross_view_retrieval(
+        batch_size * config.get_ref('device_count'),
+        num_workers,
+        ('retrieval_l14_split', 'test', [location]),
+        ('retrieval_l14_split', 'test_aerial', [f'{location}/aerial']),
+        join_factor=1.5,
+    )
+    config.test_evals.bedenl_acc.num_samples = 100_000
+    config.test_evals.bedenl_acc.eval_interval = 20_000
+    config.test_evals.bedenl_acc.valid_distance_threshold = 100  # meters
+  if location == 'bedenl_highres':
+    config.test_evals.arcollect_cc = defaults.cell_code_retrieval(
+        4 * config.get_ref('device_count'),
+        num_workers,
+        '../../ttl=360d/arcollect',
+        'test',
+        ['bedenl_l16_25_to_100_examples_per_cell-250424/'],
+    )
+    config.test_evals.arcollect_cc.cache_results = False
+    config.test_evals.arcollect_cc.data.preprocess.from_arcollect = True
+    config.test_evals.arcollect_cc.valid_distance_threshold = 500
+    config.test_evals.arcollect_cc.eval_interval = 20_000
+
+  if location == 'bedenl_metros':
+    config.test_evals.bedenl_metros_cc = defaults.cell_code_retrieval(
+        batch_size * config.get_ref('device_count'),
+        num_workers,
+        'retrieval_l14_split',
+        'test',
+        ['bedenl_metros'],
+    )
+    config.test_evals.bedenl_metros_cc.num_samples = 100_000
+    config.test_evals.bedenl_metros_cc.eval_interval = 20_000
+    config.test_evals.bedenl_metros_cc.valid_distance_threshold = 500  # meters
+
+  if location == 'western_continental_europe':
+    config.test_evals.wce_cc = defaults.cell_code_retrieval(
+        batch_size * config.get_ref('device_count'),
+        num_workers,
+        'retrieval_l14_split',
+        'test',
+        ['western_continental_europe_1sample_re'],
+    )
+    config.test_evals.wce_cc.num_samples = 100_000
+    config.test_evals.wce_cc.eval_interval = 20_000
+    config.test_evals.wce_cc.valid_distance_threshold = 200  # meters
+
+
+def get_config(
+    location: str = 'bedenl80m',
+    vit_pretrained: str = 'dinov3_b16',
+    cell_code_dim: int = 2048 + 128,
+    add_evals: bool = True,
+    link_cell_code_dim: bool = True,
+    finetune: bool = False,
+) -> ml_collections.ConfigDict:
+  """Returns the config."""
+  config = sv_aerial.get_config(
+      location=location,
+      vit_pretrained=vit_pretrained,
+      cell_code_dim=cell_code_dim,
+      add_evals=add_evals,
+      link_cell_code_dim=link_cell_code_dim,
+  )
+  config.model_name = (  # Use sv_aerial_code for backwards compatibility.
+      'sv_aerial_code_largescale'
+  )
+  config.model.cc_temperature = config.model.get_ref('temperature')
+
+  config.data.preprocess.s2cell_level = 15  # The level of the cell codes.
+
+  # Variable model configs.
+  config.model.compose_loss = 'sv_aerial_cc_multi_similarity'
+  config.model.vit.head = config.model.vit_aerial.head = 'salad_nol2'
+  config.model.shard_codes = True
+  config.model.same_cell_threshold = 200.0
+  config.model.cc_dist_threshold = config.model.same_cell_threshold
+  config.model.multi_similarity_beta = 100.0
+  config.model.multi_similarity_alpha = 2.0
+  config.model.multi_similarity_base = 0.2
+  config.model.multi_similarity_margin = 0.0
+  config.model.multi_similarity_negative_weight = -1.0  # All balanced equally.
+  config.model.multi_similarity_relative_to_pos = False
+  config.model.multi_similarity_max_proxy_negatives = 0
+  config.model.multi_similarity_skip_positives = False
+  config.model.multi_similarity_add_aerial_cc_negatives = True
+  config.model.multi_similarity_add_aerial_cc_positives = True
+  config.model.multi_similarity_mean_pos_sim = True  # only in largescale model.
+  config.model.cosface_scale = 30.0
+  config.model.cosface_margin = 0.6
+  config.model.het_smoothing = 1.0
+  config.model.sv_multi_similarity_proxy_positives = 'frustum'
+  config.model.aerial_multi_similarity_proxy_positives = (  # =interpolation
+      'adjacent'
+  )
+  config.model.mask_multi_similarity_by_distance = True
+  config.model.proxy_anchor_alpha = 100.0
+  config.model.proxy_anchor_beta = 100.0
+  config.model.proxy_anchor_margin = 0.1
+  config.model.detach_aerial_embeddings = False
+  config.model.detach_aerial_cell_codes = True  # Detach the cell codes in A-CC.
+  config.model.detach_sv_embeddings = False
+  config.model.detach_sv_cell_codes = False
+  config.model.cell_codes_momentum = 0.0
+  config.model.cell_codes_ema_over = 'sv'
+  config.model.l2_normalize_per_head = False
+  config.model.init_cell_codes = 'normal'
+  # Control edges, e.g. 'sv-a,a-sv,sv-cc
+  config.model.multi_similarity_factors = 'all'
+  config.model.multi_similarity_split_terms = False
+  config.model.implicit_cell_code_dim = 0
+  config.model.shard_codes_implicit = True
+  config.model.implicit_cell_codes_dropout = 0.0
+
+  # Set to 128 for improved accuracy and speed.
+  # Disable it if using cosface loss.
+  if 'cosface' not in config.model.compose_loss:
+    config.model.topk = 128
+  config.model.topk_recall_target = 0.95
+  config.model.masked_expsum = False  # Compute Loss on device.
+  config.model.combined_positives = False
+  config.model.store_half_precision = True  # Only cell code params / optim.
+
+  config.skip_train_viz = True
+  config.max_grad_norm = 10.0
+  config.lr.base_learning_rate = 3e-4
+  config.overwrite_lr = {'cell_codes': 1e-2}
+  config.pretrained_xm = None
+  config.num_training_steps = 200_000  # propagates to lr
+  config.lr.warmup_steps = 5_000  # Shorter warmup.
+  config.log_eval_interval = 200_000
+  config.checkpoint_interval = 10_000
+
+  if finetune:
+    config.pretrained_xm = (197329159, 1)
+    config.pretrained_load_meta_data = True
+    config.pretrained_filter.skip_regex = None
+    config.model.vit.train_last_layers = -1
+    config.num_training_steps = 50_000
+    config.lr.warmup_steps = 1_000  # Shorter warmup.
+    config.avoid_weight_decay_on_frozen_params = False
+
+  if add_evals:
+    apply_locations(location, config)
+  return config
+
+
+def get_hyper(h: Any) -> Any:
+  # Run against our own main baselines.
+  return h.product([
+      h.sweep(
+          'config.model.multi_similarity_factors', ['all', 'sv-a,a-sv', 'sv-cc']
+      ),
+  ])
