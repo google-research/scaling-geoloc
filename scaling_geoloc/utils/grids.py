@@ -17,7 +17,7 @@
 from collections.abc import Mapping
 import dataclasses
 import functools
-from typing import Type, TypeVar
+from typing import Type, TypeAlias, TypeVar
 import chex
 from etils.array_types import Array
 from etils.array_types import BoolArray
@@ -29,9 +29,9 @@ import jax.numpy as jnp
 import numpy as np
 from scaling_geoloc.utils import misc
 
-Point = FloatArray['... N']
-Index = IntArray['... N']
-ID = IntArray['...']
+Point = TypeAlias[FloatArray['... N']]
+Index = TypeAlias[IntArray['... N']]
+ID = TypeAlias[IntArray['...']]
 AnyGrid = TypeVar('AnyGrid', bound='GridND')
 
 
