@@ -25,11 +25,17 @@ from flax.training import checkpoints
 import jax
 import jax.profiler
 import numpy as np
-from scenic.projects.dino import load_params as load_dino_params
 
 # pylint: disable=line-too-long
 PYTORCH_STYLE_WEIGHTS: Final[Mapping[str, str]] = {
-    **load_dino_params.PYTORCH_STYLE_WEIGHTS,
+    'ibot_b16': 'ibot_b16_1k.npz',
+    'dinov2_vits14': 'dinov2_vits14.npz',
+    'dinov2_vitb14': 'dinov2_vitb14.npz',
+    'dinov2_vitl14': 'dinov2_vitl14.npz',
+    'dinov3_vits16': 'dinov3_vits16.npz',
+    'dinov3_vitb16': 'dinov3_vitb16.npz',
+    'dinov3_vitl16': 'dinov3_vitl16.npz',
+    'dinov3_satellite_vitl16': 'dinov3_satellite_vitl16.npz',
     'ibot_l16': (
         'pretrained_weights/ibot_l16.npz'
     ),
@@ -74,6 +80,32 @@ MODEL_NAMES_CONVNEXT: Final[frozenset[str]] = frozenset({
 })
 
 
+def split_qkv_w(qkv, nheads):
+  # qkv in pytorch is for example [2304, 768], in bv it's 3x [768, 12, 64]
+  win, wout = qkv.shape[1], qkv.shape[0] // 3
+  qkv = qkv.T.reshape(win, 3, nheads, wout // nheads)
+  return qkv[:, 0], qkv[:, 1], qkv[:, 2]
+
+
+def split_qkv_b(qkv, nheads):
+  qkv = qkv.reshape(3, nheads, -1)
+  return qkv[0], qkv[1], qkv[2]
+
+
+def split_swiglu_w(swiglu):
+  # swiglu = (8192,  1536)
+  win, wout = swiglu.shape[1], swiglu.shape[0] // 2
+  swiglu = swiglu.T.reshape(win, 2, wout)
+  return swiglu[:, 0], swiglu[:, 1]
+
+
+def split_swiglu_b(swiglu):
+  # swiglu = (8192, )
+  swiglu = swiglu.reshape(2, -1)
+  return swiglu[0], swiglu[1]
+
+
+
 def get_param_from_pytorch_style_dict(
     dino: Mapping[str, np.ndarray],
     scenic_name: str,
@@ -116,7 +148,7 @@ def get_param_from_pytorch_style_dict(
   prefix = f'encoderblock_{iblock}/'
   pt_prefix = f'blocks.{iblock}.'
 
-  q, k, v = load_dino_params.split_qkv_w(
+  q, k, v = split_qkv_w(
       dino[pt_prefix + 'attn.qkv.weight'], nheads
   )
   block = {
@@ -149,8 +181,8 @@ def get_param_from_pytorch_style_dict(
         prefix + 'MlpBlock_0/Dense_1/bias': dino[pt_prefix + 'mlp.fc2.bias'],
     })
   elif pt_prefix + 'mlp.w12.weight' in dino:
-    w1, w2 = load_dino_params.split_swiglu_w(dino[pt_prefix + 'mlp.w12.weight'])
-    b1, b2 = load_dino_params.split_swiglu_b(dino[pt_prefix + 'mlp.w12.bias'])
+    w1, w2 = split_swiglu_w(dino[pt_prefix + 'mlp.w12.weight'])
+    b1, b2 = split_swiglu_b(dino[pt_prefix + 'mlp.w12.bias'])
     block.update({
         prefix + 'FFNSwiGluFused_0/Dense_0/kernel': w1,
         prefix + 'FFNSwiGluFused_0/Dense_0/bias': b1,
@@ -165,7 +197,7 @@ def get_param_from_pytorch_style_dict(
     })
 
   if pt_prefix + 'attn.qkv.bias' in dino:
-    q_b, k_b, v_b = load_dino_params.split_qkv_b(
+    q_b, k_b, v_b = split_qkv_b(
         dino[pt_prefix + 'attn.qkv.bias'], nheads
     )
     block.update({
@@ -214,8 +246,6 @@ def restore_params(checkpoint_name: str, checkpoint_path: str, params: Any,
     # Number of head.
     nh = params['encoderblock_0']['MultiHeadDotProductAttention_0']['key']['kernel'].shape[1]  # pylint: disable=line-too-long
     get_param = get_param_from_pytorch_style_dict
-    if checkpoint_name.startswith('deit'):
-      get_param = load_dino_params.get_param_from_deit
     if checkpoint_name.startswith('beitv2'):
       # We load only the encoder.
       pt_weights = {k.replace('encoder.', ''): v for (
@@ -236,20 +266,6 @@ def restore_params(checkpoint_name: str, checkpoint_path: str, params: Any,
     restored_params = bv_utils.tree_map_with_names(
         lambda k, v: None if dontload(k) else get_param(pt_weights, k, nh),
         params)
-
-  # Option 2: We load an AugReg checkpoint.
-  elif checkpoint_name in load_dino_params.AUGREG_WEIGHTS.keys():
-    params_key = ''
-    restored_params = load_dino_params.load_augreg(
-        load_dino_params.AUGREG_WEIGHTS[checkpoint_name], params
-    )
-
-  # Option 3: We load a scenic basic style checkpoint.
-  elif checkpoint_name in load_dino_params.SCENIC_WEIGHTS.keys():
-    params_key = 'params'
-    restored_params = checkpoints.restore_checkpoint(
-        load_dino_params.SCENIC_WEIGHTS[checkpoint_name], None
-    )
 
   # Option 4: We load an official big_vision checkpoint.
   elif checkpoint_name in bv_vit.VANITY_NAMES.keys():
