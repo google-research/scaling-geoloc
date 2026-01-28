@@ -27,15 +27,12 @@ from etils.array_types import IntArray
 import flax
 from flax import jax_utils
 import jax
-from jax import nn
 import jax.numpy as jnp
-import jax.scipy as jsp
 import jaxcam
 import numpy as np
 from scenic.dataset_lib import dataset_utils
 from scenic.train_lib import train_utils
 import scipy
-from skimage import draw as skdraw
 from sklearn import decomposition
 import tqdm
 from google3.location.visualmapping.experimental.lemming.utils import geometry
@@ -307,23 +304,6 @@ def l2_normalize(
     return jnp.where(denom_sq < tiny, jnp.zeros_like(normal), normal)
 
 
-def bbox_norm(
-    points: FloatArray['N d'],
-    axis: int | tuple[int, ...] = 0,
-    eps: float = 1.0e-8,
-    center: bool = True,
-) -> np.ndarray:
-  """Returns point coordinates normalized to cube of size [0, 1]."""
-  lower_bound = points.min(axis=axis, keepdims=True)
-  upper_bound = points.max(axis=axis, keepdims=True)
-  points_norm = (points - lower_bound) / (upper_bound - lower_bound).clip(
-      min=eps
-  )
-  if center:
-    points_norm = (points_norm - 0.5) * 2.0
-  return points_norm
-
-
 def side_by_side(
     images: Sequence[FloatArray['... H W 3']],
 ) -> FloatArray['... H W 3']:
@@ -477,57 +457,6 @@ def cross_entropy(
   return -(target_probs * log_source_probs).sum(axis=-1, keepdims=True)
 
 
-def batched_cov(
-    w_points: FloatArray['... N d'],
-    weights: FloatArray['... N'] | None = None,
-    bias: bool = False,
-) -> FloatArray['... d d']:
-  """Computes the covariance over N samples, batcher over arbitrary dims."""
-  if weights is None:
-    cov_fn = functools.partial(jnp.cov, bias=bias, rowvar=False)
-    cov = jax.vmap(cov_fn)(jax.lax.collapse(w_points, 0, -2))
-  else:
-    cov_fn = lambda p, w: jnp.cov(p, bias=bias, aweights=w, rowvar=False)
-    cov = jax.vmap(cov_fn)(
-        jax.lax.collapse(w_points, 0, -2),
-        jax.lax.collapse(weights, 0, -1),
-    )
-  return cov.reshape(w_points.shape[:-2] + cov.shape[1:])
-
-
-def matches_from_similarity(
-    similarity: FloatArray['... M N'],
-    threshold: float = 0.0,
-    mutual_check: bool = False,
-) -> Mapping[str, Array]:
-  """Compute directional matches from similarity matrix with mutual check."""
-  m, n = similarity.shape[-2:]
-
-  num_batch_dims = jnp.ndim(similarity) - 2
-  ii = jnp.expand_dims(jnp.arange(0, m), axis=range(num_batch_dims))
-  jj = jnp.expand_dims(jnp.arange(0, n), axis=range(num_batch_dims))
-
-  mi = similarity.argmax(axis=-1)  # ... M
-  mj = similarity.argmax(axis=-2)  # ... N
-
-  mscoresi = similarity.max(axis=-1)
-  mscoresj = similarity.max(axis=-2)
-  if mutual_check:
-    mutuali = ii == jnp.take_along_axis(mj, mi, axis=-1)
-    mutualj = jj == jnp.take_along_axis(mi, mj, axis=-1)
-    mscoresi = mscoresi * mutuali
-    mscoresj = mscoresj * mutualj
-
-  mi = jnp.where(mscoresi > threshold, mi, -1)
-  mj = jnp.where(mscoresj > threshold, mj, -1)
-  return {
-      'matches_i': mi[..., None],
-      'matches_j': mj[..., None],
-      'matching_scores_i': mscoresi[..., None],
-      'matching_scores_j': mscoresj[..., None],
-  }
-
-
 # Source: third_party/py/dm_pix/_src/augmentation.py
 def get_interpolate_function(
     mode: str,
@@ -622,170 +551,6 @@ def resize_image_like(
   return data
 
 
-def match_features(
-    features_i: FloatArray['... MH MW C'],
-    features_j: FloatArray['... NH NW C'],
-    **kwargs,
-) -> Mapping[str, Array]:
-  """Computes matches between features_i and features_j.
-
-  Assumes features to be on a grid.
-
-  Args:
-    features_i: Features for each patch in image i.
-    features_j: Features for each patch in image j.
-    **kwargs: Arguments for matches_from_similarity.
-
-  Returns:
-    Dictionary with similarity, keypoints_i, keypoints_j, matches_i, matches_j,
-    matching_scores_i, matching_scores_j.
-  """
-  mh, mw = features_i.shape[-3:-1]
-  nh, nw = features_j.shape[-3:-1]
-  batch_dims = features_j.shape[:-3]
-  xy_i = jax.lax.collapse(grid_indices(mh, mw, batch_dims), -3, -1)
-  xy_j = jax.lax.collapse(grid_indices(nh, nw, batch_dims), -3, -1)
-
-  similarity = jnp.einsum(
-      '...md,...nd->...mn',
-      jax.lax.collapse(features_i, -3, -1),
-      jax.lax.collapse(features_j, -3, -1),
-  )
-
-  matches = matches_from_similarity(similarity, **kwargs)
-
-  return {
-      'similarity': similarity[..., None],
-      'keypoints_i': indices_to_coords(xy_i),
-      'keypoints_j': indices_to_coords(xy_j),
-      **{k: v for k, v in matches.items()},
-  }
-
-
-def xy_to_rgb(x: float, y: float) -> FloatArray['3']:
-  """Converts a 2D point (between 0 and 1) to an RGB color."""
-  return jnp.where(x > y, jnp.stack([x, 1 - x, y]), jnp.stack([x, 1 - y, y]))
-
-
-def cmap_2d(xy_norm: FloatArray['... 2']) -> FloatArray['... 3']:
-  """Converts normalized 2D coordinates to RGB colors."""
-
-  def to_rgb(xy):
-    x, y = xy
-    return xy_to_rgb(x, y)
-
-  return jnp.apply_along_axis(to_rgb, -1, xy_norm)
-
-
-def draw_correspondences(
-    image_ij: FloatArray['H W C'],
-    mpoints_i: FloatArray['L 2'],
-    mpoints_j: FloatArray['L 2'],
-    mscores: FloatArray['L 1'],
-    valid: BoolArray['L 1'],
-    offset_b: tuple[float, float] | None = None,  # (r, c), default (0, w/2)
-    color_by_coords: bool = True,
-    draw: str = 'lines',
-) -> FloatArray['H W C']:
-  """Draw lines between points_a and points_b into image_ab."""
-  h, w = image_ij.shape[-3:-1]
-  opacity = 1.0
-  if offset_b is None:
-    offset_b = (0, int(w // 2))
-  mpoints_i = coords_to_indices(mpoints_i)
-  mpoints_j = coords_to_indices(mpoints_j)
-
-  for (c0, r0), (c1, r1), (sc,), (isv,) in zip(
-      mpoints_i, mpoints_j, mscores, valid
-  ):
-    if not isv:
-      continue
-    or1, oc1 = offset_b
-    if draw == 'lines':
-      rr, cc, _ = skdraw.line_aa(r0, c0, r1 + or1, c1 + oc1)
-    elif draw == 'points' or sc < 0:
-      rr, cc = zip(
-          skdraw.disk((r0, c0), 2), skdraw.disk((r1 + or1, c1 + oc1), 2)
-      )
-      rr, cc = np.concatenate(rr), np.concatenate(cc)
-    elif draw == 'points+lines':
-      rr, cc = zip(
-          skdraw.line_aa(r0, c0, r1 + or1, c1 + oc1),
-          skdraw.disk((r0, c0), 3),
-          skdraw.disk((r1 + or1, c1 + oc1), 3),
-      )
-      rr, cc = np.concatenate(rr), np.concatenate(cc)
-    else:
-      raise ValueError(f'Unknown draw method: {draw}')
-    if color_by_coords:
-      c = xy_to_rgb(c0 / (w // 2), r0 / h)
-      opc = sc * opacity
-    else:
-      c = np.array((0.0, 1.0, 0.0)) * sc + np.array((1.0, 0.0, 0.0)) * (1 - sc)
-      opc = opacity
-    image_ij[rr, cc] = (
-        image_ij[rr, cc] * (1 - opc) + opc * opacity * np.array(c)[None]
-    )
-  return image_ij
-
-
-def draw_matches(
-    image_ij: FloatArray['H W C'],
-    points_i: FloatArray['M 2'],
-    points_j: FloatArray['N 2'],
-    matches_i: IntArray['M 1'],
-    scores_i: FloatArray['M 1'],
-    offset_b: tuple[float, float],
-    color_by_coords: bool,
-    draw: str,
-) -> FloatArray['H W C']:
-  """Draw matches between two images."""
-  return draw_correspondences(
-      image_ij,
-      points_i,
-      np.take_along_axis(points_j, matches_i, axis=-2),
-      jnp.where(matches_i > -1, scores_i, -1),
-      matches_i > -1,
-      offset_b=offset_b,
-      color_by_coords=color_by_coords,
-      draw=draw,
-  )
-
-
-def batch_draw_matches(
-    image_ij: FloatArray['... H W C'],
-    points_i: FloatArray['... M 2'],
-    points_j: FloatArray['... N 2'],
-    matches_i: IntArray['... M 1'],
-    scores_i: FloatArray['... M 1'],
-    offset_b: tuple[float, float] | None = None,  # (r, c), default (0, w/2)
-    color_by_coords: bool = True,
-    draw: str = 'lines',
-) -> FloatArray['... H W C']:
-  """Draw matches over arbitrary amount of batch dimensions."""
-  batch_dims = image_ij.shape[:-3]
-  nb = len(batch_dims)
-  args = (
-      jax.lax.collapse(image_ij, 0, nb),
-      jax.lax.collapse(points_i, 0, nb),
-      jax.lax.collapse(points_j, 0, nb),
-      jax.lax.collapse(matches_i, 0, nb),
-      jax.lax.collapse(scores_i, 0, nb),
-  )
-  b = args[0].shape[0]
-  images = []
-  for i in range(b):
-    images.append(
-        draw_matches(
-            *[np.array(arg[i]) for arg in args],  # To numpy.
-            offset_b,
-            color_by_coords,
-            draw,
-        )
-    )
-  return jnp.stack(images).reshape(*batch_dims, *image_ij.shape[-3:])
-
-
 def image_resize_host(
     image: FloatArray['... H W C'],
     shape: tuple[int, ...],
@@ -808,27 +573,6 @@ def image_resize_host(
                 antialias=antialias,
             )
         )
-
-
-def inv_pose(
-    y_t_x: FloatArray['... 4 4'], check: bool = False
-) -> FloatArray['... 4 4']:
-  """Invert SE(3) pose."""
-  y_r_x, y_p_x = y_t_x[..., :3, :3], y_t_x[..., :3, -1:]
-  x_r_y = jnp.moveaxis(y_r_x, -2, -1)
-  x_p_y = -jnp.einsum('...ij,...jk->...ik', x_r_y, y_p_x)
-  x_t_y = jnp.concatenate([x_r_y, x_p_y], axis=-1)
-  x_t_y = jnp.concatenate([x_t_y, y_t_x[..., -1:, :]], -2)
-  if check:
-    r = np.abs(
-        x_t_y.astype(np.float64)
-        - np.linalg.inv(np.array(y_t_x).astype(np.float64))
-    ).max()
-    if r > 1.0e-6:
-      raise OverflowError(
-          f'Numerical instability in inv_pose detected. Delta={r}.'
-      )
-  return x_t_y
 
 
 def shuffle_and_partition(
@@ -871,52 +615,6 @@ def batch_sample_indices(
 
   keys = jax.random.split(rng, probs.shape[0])
   return jax.vmap(functools.partial(sample_indices))(keys, probs)
-
-
-def info_nce(
-    pos_sim: FloatArray['... 1'],
-    neg_sim: FloatArray['... N'],
-    neg_valid: BoolArray['... N'] | None = None,
-    temperature: float = 1.0,
-) -> FloatArray['...']:
-  """Computes the information NCE loss."""
-  sample_sim = jnp.concatenate([pos_sim, neg_sim], axis=-1)
-  if neg_valid is None:
-    sample_valid = None
-  else:
-    sample_valid = jnp.concatenate([jnp.ones_like(pos_sim), neg_valid], axis=-1)
-  sample_log_smax = nn.log_softmax(
-      sample_sim / temperature, axis=-1, where=sample_valid
-  )
-  sample_log_p = sample_log_smax[..., 0]
-  return -sample_log_p
-
-
-def info_dce(
-    pos_sim: FloatArray['... 1'],
-    neg_sim: FloatArray['... N'],
-    neg_valid: BoolArray['... N'] | None = None,
-    axis: int = -1,
-    temperature: float = 1.0,
-) -> FloatArray['...']:
-  """Computes the decoupled information NCE loss."""
-  return -pos_sim / temperature + jsp.special.logsumexp(
-      jnp.where(neg_valid, neg_sim, -jnp.inf) / temperature,
-      axis=axis,
-      where=neg_valid,
-  )
-
-
-def lidar_depth_to_xyz(
-    depth: FloatArray['V H W 1'],
-    camera: jaxcam.Camera,
-) -> FloatArray['V H W 3']:
-  """Converts lidar depth to 3D points."""
-  h, w = depth.shape[-3:-1]
-  pixels = grid_indices(h, w, depth.shape[:-3]) + 0.5
-  w_points = jax.vmap(jaxcam.pixels_to_points)(camera, pixels, depth[..., 0])
-  w_points = w_points[..., :3] / w_points[..., -1:]
-  return w_points
 
 
 def distort_image_coordinates(
@@ -997,38 +695,6 @@ def log_safe(x: FloatArray['...'], eps: float = 1.0e-8) -> FloatArray['...']:
 
 
 # Source: https://arxiv.org/pdf/1904.06627
-def multi_similarity_loss(
-    similarity_l2: FloatArray['B x N'],
-    positive: IntArray[
-        'B x K'
-    ],  # all others are negative. -1 is also negative.
-    alpha: float = 1.0,
-    beta: float = 50.0,
-    base: float = 0.0,
-    where: BoolArray['B x N'] | None = None,  # on negatives only.
-    pos_weights: FloatArray['B x K'] | None = None,
-) -> tuple[FloatArray['B'], FloatArray['B']]:
-  """Computes the multi-similarity loss."""
-  # Positives of -1 are ignored -> set the index to OOB, and use fill_value.
-  positive = jnp.where(positive == -1, similarity_l2.shape[-1], positive)
-  # OOB value is jnp.inf here, as then exp(-alpha * jnp.inf) = 0.
-  pos_sim = jnp.take_along_axis(
-      similarity_l2, positive, axis=-1, fill_value=jnp.inf
-  )
-  if where is not None:
-    similarity_l2 = jnp.where(where, similarity_l2, -jnp.inf)
-  # OOB value is -jnp.inf here, as then exp(beta * -jnp.inf) = 0.
-  neg_sim = jnp.put_along_axis(
-      similarity_l2, positive, -jnp.inf, axis=-1, inplace=False, mode='drop'
-  )
-  pos_exp = jnp.exp(-alpha * (pos_sim - base))
-  if pos_weights is not None:
-    pos_exp = pos_exp * pos_weights
-  ms_pos = log_safe(1 + pos_exp.sum(-1))
-  ms_neg = log_safe(1 + jnp.exp(beta * (neg_sim - base)).sum(-1))
-  return ms_pos / alpha, ms_neg / beta
-
-
 class MultiSimilarityLoss:
   """Multi-similarity loss."""
 
@@ -1211,61 +877,6 @@ class CosFace:
     )
 
 
-# Source: https://arxiv.org/pdf/2003.13911
-def proxy_anchor_loss(
-    proxy_sim: FloatArray['B N'],
-    proxy_mask: IntArray['B N'],  # -1 is ignore / padding.
-    margin: float = 0.1,
-    beta: float = 1.0,
-    alpha: float | None = None,
-    axis_name: str | None = None,
-) -> tuple[FloatArray['1'], FloatArray['1']]:
-  """Computes the proxy anchor loss."""
-  # Positives have the same label, simple as that.
-  alpha = alpha if alpha is not None else beta
-  pos_exponent = jnp.exp(-alpha * (proxy_sim - margin))
-  neg_exponent = jnp.exp(beta * (proxy_sim + margin))
-
-  pos_lse = pos_exponent * (proxy_mask == 1)
-  neg_lse = neg_exponent * (proxy_mask == 0)
-
-  if axis_name is not None:
-    # Assume that sharded over batch dimension
-    pos_lse = jax.lax.psum(pos_lse, axis_name=axis_name)
-    neg_lse = jax.lax.psum(neg_lse, axis_name=axis_name)
-    proxy_mask = (
-        jax.lax.psum(proxy_mask == 1, axis_name=axis_name) > 0
-    ).astype(jnp.int32)
-  pos_proxies = (proxy_mask == 1).any(-2)
-  pos_term = masked_mean(log_safe(1 + pos_lse).sum(-2), pos_proxies)
-  neg_term = log_safe(1 + neg_lse).sum(-2).mean()
-
-  w_alpha = beta / (alpha + beta)
-  w_beta = 1 - w_alpha
-  return pos_term[None] * w_alpha, neg_term[None] * w_beta
-
-
-def proxy_anchor_loss_from_labels(
-    proxy_sim: FloatArray['B N'],
-    proxy_labels: IntArray['B'],  # -1 is ignore / padding.
-    margin: float = 0.1,
-    alpha: float = 1.0,
-    axis_name: str | None = None,
-) -> tuple[FloatArray['1'], FloatArray['1']]:
-  """Computes the proxy anchor loss from labels."""
-  # Positives have the same label, simple as that.
-  proxy_mask = jnp.zeros_like(proxy_sim, dtype=jnp.int32)
-  proxy_mask = proxy_mask.at[jnp.arange(proxy_sim.shape[0]), proxy_labels].set(
-      1
-  )
-  return proxy_anchor_loss(
-      proxy_sim, proxy_mask, margin=margin, alpha=alpha, axis_name=axis_name
-  )
-
-
-batched_lidar_depth_to_xyz = jax.vmap(lidar_depth_to_xyz)
-
-
 def draw_image_border(
     image: FloatArray['... H W C'],
     border_color: FloatArray['... 3'],
@@ -1369,33 +980,6 @@ def camera_from_rpyf(
       radial_distortion=np.zeros(3),
       tangential_distortion=np.zeros(2),
   )
-
-
-def border_in_pano(
-    pano_img: FloatArray['H W 3'], cam: jaxcam.Camera
-) -> FloatArray['6 2']:
-  """Converts the border of an image into pano image coordinates."""
-  ph, pw = pano_img.shape[:2]
-  f_v = ph / jnp.pi
-  f_h = pw / (2 * jnp.pi)
-  w, h = cam.image_size
-  principal_point = jnp.array([w / 2, h / 2])
-  xy = grid_indices(h, w) + 0.5
-  border_xy = jnp.concatenate(
-      [
-          principal_point[None],
-          xy[0],
-          xy[:, -1],
-          jnp.flip(xy[-1], 0),
-          jnp.flip(xy[:, 0], 0),
-      ],
-      axis=0,
-  )
-  border_rays = jaxcam.pixels_to_rays(cam, border_xy)
-  pano_xy = jax.vmap(
-      functools.partial(spherical_project, f_horizontal=f_h, f_vertical=f_v)
-  )(border_rays)
-  return pano_xy - 0.5
 
 
 def img_from_pano(
@@ -1969,93 +1553,6 @@ def distances_to_weights(
   return haversine_weights
 
 
-def weighted_sigmoid_binary_cross_entropy(
-    logits: FloatArray['... N'],
-    labels: FloatArray['... N'],
-    temperature: float = 1.0,
-) -> FloatArray['...']:
-  """Computes the weighted sigmoid binary cross entropy."""
-  positives = labels * nn.log_sigmoid(logits / temperature)
-  negatives = (1 - labels) * nn.log_sigmoid(-logits / temperature)
-  loss_positive = -positives.sum(-1) / labels.sum(-1).clip(min=1.0)
-  loss_negative = -negatives.sum(-1) / (1 - labels).sum(-1).clip(min=1.0)
-  return loss_positive + loss_negative
-
-
-def tree_mask(
-    tree_idx: FloatArray['N H'],
-    gt_idxs: FloatArray['B K'],  # -1 is ignore / padding.
-) -> FloatArray['B N H']:
-  """Computes the tree mask from leaf indices."""
-  gt_tree_idxs = jnp.take_along_axis(
-      tree_idx[None],
-      gt_idxs[..., None],
-      axis=-2,
-  )  # B x K x H
-  gt_tree_idxs = jnp.where(gt_idxs[..., None] > -1, gt_tree_idxs, -1)
-  if gt_idxs.shape[-1] == 1:
-    gt_tree_mask = tree_idx[None] == gt_tree_idxs
-  else:
-    gt_tree_mask = jax.vmap(
-        jax.vmap(
-            lambda x, y: (jnp.isin(x, y)) & (x > -1),
-            in_axes=-1,
-            out_axes=-1,
-        )
-    )(
-        tree_idx[None].repeat(gt_idxs.shape[0], axis=0), gt_tree_idxs
-    )  # B X N x H (vmap over B and H)
-  return gt_tree_mask
-
-
-def weights_from_tree(
-    tree_prob: FloatArray['B H'],
-) -> FloatArray['B H']:
-  """Computes the weights based on previous level probabilities."""
-  weights = jnp.roll(tree_prob, 1, axis=-1)
-  weights = weights.at[:, 0].set(1.0)
-  return weights
-
-
-def hierarchical_loss(
-    cell_probs: FloatArray['B N H'],
-    gt_idxs: FloatArray['B K'],
-    tree_idx: FloatArray['N H'],
-    weighted: bool = False,
-) -> FloatArray['B H']:
-  """Computes the hierarchical loss."""
-  gt_mask_per_level = tree_mask(tree_idx, gt_idxs)
-  gt_prob_tree = (gt_mask_per_level * cell_probs[..., None]).sum(-2)
-  gt_log_prob_tree = log_safe(gt_prob_tree)
-  if weighted:
-    weights = weights_from_tree(gt_prob_tree)
-    return -(jax.lax.stop_gradient(weights) * gt_log_prob_tree)
-  else:
-    return -gt_log_prob_tree
-
-
-def masked_distances_loss(
-    distances_th: Sequence[float],
-    probs: FloatArray['B N'],
-    distances: FloatArray['B N'],
-    weighted: bool = False,
-) -> FloatArray['B']:
-  """Computes the masked distance loss."""
-  temperatures = jnp.array(distances_th)[None, :, None]
-  probs = probs[:, None]
-  tree_weights = distances_to_weights(
-      distances[:, None] / temperatures, clip_min=1.0e-3
-  )
-  haversine_mask = distances[:, None] < temperatures
-  haversine_mask_probs = (haversine_mask * probs).sum(-1)
-  if weighted:
-    tree_prob = (tree_weights * probs).sum(-1)  # B x H
-    weights = weights_from_tree(tree_prob)
-    return -(jax.lax.stop_gradient(weights) * log_safe(tree_prob)).sum(-1)
-  else:
-    return -log_safe(haversine_mask_probs).sum(-1)
-
-
 def crop_aerial_image(
     image: FloatArray['H W 3'],  # (x, y, c)
     resolution_meters_source: float,  # meters / pixel
@@ -2177,40 +1674,6 @@ def sharded_batched_gather(
   return jax.lax.psum_scatter(x_gathered, axis_name=axis_name)
 
 
-def kernel_interpolate(
-    x: FloatArray['N 2'],
-    y: FloatArray['K 2'],
-    z: FloatArray['N D'],
-    inv_scale: float,
-    normalize=True,
-) -> tuple[FloatArray['K'], FloatArray['K D']]:
-  """Computes the kernel interpolation of y in x & z."""
-  dist = haversine_distance(x[None], y[:, None])
-  scaled_dist = distances_to_weights(dist / inv_scale)
-  weights = scaled_dist
-  if normalize:
-    weights = weights / weights.sum(-2, keepdims=True).clip(min=1.0e-6)
-  return dist[..., 0].min(-1), (weights * z[None]).sum(-2)
-
-
-def rbf_interpolate(
-    x: FloatArray['N 2'],
-    y: FloatArray['K 2'],
-    z: FloatArray['N D'],
-    inv_scale: float,
-) -> tuple[FloatArray['K'], FloatArray['K D']]:
-  """Computes the Radial Basis Function interpolation between of y in x & z."""
-  xx_dist = haversine_distance(x[None], x[:, None])[..., 0]
-  xx_scaled_dist = distances_to_weights(xx_dist / inv_scale)
-  weights = jax.vmap(jnp.linalg.solve, in_axes=(None, -1), out_axes=-1)(
-      xx_scaled_dist, z
-  )
-  yx_dist = haversine_distance(y[:, None], x[None])[..., 0]
-  yx_scaled_dist = distances_to_weights(yx_dist / inv_scale)
-  min_dist = yx_dist.min(-1)
-  return min_dist, yx_scaled_dist @ weights
-
-
 def unshard_or_unreplicate_from_shape_fn(
     target_shape: tuple[int, ...] | Sequence[tuple[int, ...]],
     half_precision: bool = False,
@@ -2318,57 +1781,6 @@ def shard_or_replicate_train_state(
   # pytype: enable=attribute-error#
 
 
-def filter_hard_negatives(
-    similarity: FloatArray['B N'],
-    keep: IntArray['B K'],
-    num_negatives: int | None = None,
-    where: BoolArray['B N'] | None = None,  # Only for negatives.
-) -> tuple[FloatArray['B K'], FloatArray['B k']]:
-  """Extracts hard negatives excluding a set of 'keep' indices."""
-  if num_negatives is None:
-    num_negatives = keep.shape[-1]
-  similarity_keep = jnp.take_along_axis(similarity, keep, axis=-1)  # B x K
-  neg_similarity = jnp.put_along_axis(
-      similarity,
-      keep,
-      -jnp.ones_like(keep) * jnp.inf,
-      axis=-1,
-      inplace=False,
-  )
-  if where is not None:
-    neg_similarity = jnp.where(where, neg_similarity, -jnp.inf)
-  _, topk_neg = jax.lax.approx_max_k(neg_similarity, k=num_negatives)
-  return similarity_keep, jnp.take_along_axis(similarity, topk_neg, axis=-1)
-
-
-def combine_similarities(
-    similarities: Sequence[FloatArray['B Ni']],
-    gt_idxs: Sequence[IntArray['B Ki']],
-    valid: Sequence[IntArray['B Ni']] | None = None,
-    axis: int = -1,
-) -> (
-    tuple[FloatArray['B N'], IntArray['B K']]
-    | tuple[FloatArray['B N'], IntArray['B K'], BoolArray['B N']]
-):
-  """Combines similarities, and apply offsets to gt_idxs."""
-  lengths = jnp.array(
-      [0] + [x.shape[axis] for x in similarities[:-1]], dtype=jnp.int32
-  )
-  offsets = jnp.cumsum(lengths)
-  gt_idxs = jnp.concatenate(
-      [
-          jnp.where(gt_idx > -1, gt_idx + offsets[i], -1)
-          for i, gt_idx in enumerate(gt_idxs)
-      ],
-      axis=axis,
-  )
-  similarity = jnp.concatenate(similarities, axis=axis)
-  if valid is None:
-    return similarity, gt_idxs
-  else:
-    return similarity, gt_idxs, jnp.concatenate(valid, axis=axis)
-
-
 def l2_normalize_per_head(
     x: FloatArray['... D'],
     num_heads: int,
@@ -2414,38 +1826,6 @@ def l2_normalize_per_head_vit(
   return l2_normalize_per_head(x, num_heads, offset=offset, numpy=numpy)
 
 
-def multihead_similarity(
-    source_f: FloatArray['... H*D+NO'],
-    target_f: FloatArray['... H*D+NO'],
-    num_heads: int,
-    offset: int = 0,
-    normalize: bool = False,
-) -> FloatArray['B N H|H+1 1']:
-  """Computes multi-head similarity."""
-
-  def unflatten(x):
-    return x.reshape(x.shape[:-1] + (num_heads, x.shape[-1] // num_heads))
-
-  sim = compute_similarity(
-      unflatten(source_f[..., offset:]),
-      unflatten(target_f[..., offset:]),
-      normalize=normalize,
-  )
-  if offset != 0:
-    sim = jnp.concatenate(
-        [
-            compute_similarity(
-                source_f[..., None, :offset],
-                target_f[..., None, :offset],
-                normalize=normalize,
-            ),
-            sim,
-        ],
-        axis=-2,
-    )
-  return sim
-
-
 def weighted_softmax(
     x: FloatArray['...'], weights: FloatArray['...'], axis: int
 ):
@@ -2469,37 +1849,6 @@ def heterogeneous_similarity(
   probs_scaled = (probs + smoothing * weights[..., None]) / (1 + smoothing)
   sim_per_head = (probs_scaled * multihead_sim).sum(-2)
   return sim_per_head, probs_scaled
-
-
-def compute_heterogeneous_similarity(
-    source_f: FloatArray['B D'],
-    target_f: FloatArray['B N D'],
-    weights: FloatArray['B N'],
-    temperature: float = 0.1,
-    smoothing: float = 1.0,  # Can also be negative to sparsify results!
-    num_heads_and_offset: tuple[int, int] | str = (1, 0),
-    normalize: bool = False,
-) -> tuple[FloatArray['B H'], FloatArray['B N H'], FloatArray['B N H']]:
-  """Computes the heterogeneous similarity from features."""
-  if isinstance(num_heads_and_offset, str):
-    num_heads_and_offset = num_heads_and_offset_vit(
-        source_f.shape[-1], num_heads_and_offset
-    )
-  mh_pos_sim = multihead_similarity(
-      source_f[:, None],
-      target_f,
-      num_heads=num_heads_and_offset[0],
-      offset=num_heads_and_offset[1],
-      normalize=normalize,
-  )[..., 0]
-  mh_het_sim, mh_probs = heterogeneous_similarity(
-      mh_pos_sim,
-      weights=weights,
-      temperature=temperature,
-      smoothing=smoothing,
-  )
-  het_sim = mh_het_sim.mean(-1, keepdims=True)
-  return het_sim, mh_pos_sim, mh_probs
 
 
 def ecef_to_latlngalt(
