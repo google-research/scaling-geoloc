@@ -101,6 +101,10 @@ class GeoLocalizer(nn.Module):
         self.config.get('cc_temperature', self.config.get('temperature', 0.1))
     )
 
+    self.cell_code_dim = self.config.get(
+        'cell_code_dim', self.backbone.output_dim()
+    )
+
   def encode_multiview(
       self,
       batch: types.Batch,
