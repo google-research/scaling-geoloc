@@ -92,15 +92,14 @@ class GeoLocalizer(nn.Module):
     )
 
     temperature = self.config.get('temperature', 0.1)
-    if self.config.get('learned_temperature', False):
-      self.temperature = self.param(
-          'temperature',
-          nn.initializers.constant(temperature),
-          (),
-          self.dtype,
-      )
-    else:
-      self.temperature = jnp.array(temperature)
+    self.temperature = jnp.array(temperature)
+
+    self.sv_temperature = jnp.array(
+        self.config.get('cc_temperature', self.config.get('temperature', 0.1))
+    )
+    self.aerial_temperature = jnp.array(
+        self.config.get('cc_temperature', self.config.get('temperature', 0.1))
+    )
 
   def encode_multiview(
       self,
