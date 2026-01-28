@@ -28,7 +28,7 @@ from scaling_geoloc.scenic import types
 from scaling_geoloc.scenic.models import base
 from scaling_geoloc.scenic.models import vit
 from scaling_geoloc.utils import augmentations
-from scaling_geoloc.utils import misc
+from scaling_geoloc.utils import misc, distributed
 
 
 def get_augment_fn(
@@ -121,6 +121,25 @@ class GeoLocalizer(nn.Module):
     if self.config.get('l2_normalize', False):
       cell_codes = misc.l2_normalize(cell_codes)
     return cell_codes
+
+  def compute_similarity_to_cell_codes(
+      self,
+      logits: FloatArray['B ... D'],
+      cell_codes: FloatArray['... N|N//ND D'],
+      normalize: bool = False,
+  ) -> FloatArray['B N']:
+    """Computes similarity to cell codes."""
+    logits = jnp.expand_dims(logits, axis=-2)
+    cell_codes = cell_codes[None]
+    if self.config.get('shard_codes', False) and not self.is_initializing():
+      # @TODO: Probably only need this one.
+      return distributed.sharded_similarity(logits, cell_codes, normalize=normalize)
+    else:
+      return misc.compute_similarity(
+          logits,
+          cell_codes,
+          normalize=normalize,
+      )[..., 0]
 
   def encode_multiview(
       self,
