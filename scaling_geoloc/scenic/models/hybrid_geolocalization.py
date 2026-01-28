@@ -19,6 +19,7 @@ from typing import Any, Mapping
 from etils.array_types import FloatArray
 import flax.linen as nn
 import jax
+import numpy as np
 import jax.numpy as jnp
 import jaxtyping as jt
 import ml_collections
@@ -104,6 +105,22 @@ class GeoLocalizer(nn.Module):
     self.cell_code_dim = self.config.get(
         'cell_code_dim', self.backbone.output_dim()
     )
+
+  @nn.compact
+  def get_cell_codes(self, cell_code_dim: int) -> FloatArray['N D']:
+    num_cells = self.num_cells
+    if self.config.get('shard_codes', False) and not self.is_initializing():
+      num_cells = num_cells // jax.device_count()
+    init_fn = nn.initializers.normal(stddev=1 / np.sqrt(cell_code_dim))
+    cell_codes = self.param(
+        'cell_codes',
+        init_fn,
+        (num_cells, cell_code_dim),
+        self.dtype,
+    )
+    if self.config.get('l2_normalize', False):
+      cell_codes = misc.l2_normalize(cell_codes)
+    return cell_codes
 
   def encode_multiview(
       self,
