@@ -32,8 +32,6 @@ from sklearn import decomposition
 from google3.location.visualmapping.experimental.lemming.utils import geometry
 
 
-
-
 def filter_dict(
     filter_fn: Callable[[str, Any], bool],
     d: dict[str, Any],
@@ -64,16 +62,6 @@ def map_dict(
   return flax.traverse_util.unflatten_dict(
       {k: map_fn(k, v) for k, v in d.items()}, sep=sep
   )
-
-
-def to_device_safe(data: Any, device: jax.Device) -> Any:
-  def maybe_put_to_device(x):
-    try:
-      return jax.device_put(x, device)
-    except TypeError:
-      return x
-
-  return jax.tree.map(maybe_put_to_device, data)
 
 
 def sequence_to_image(

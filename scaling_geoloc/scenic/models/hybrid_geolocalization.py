@@ -16,7 +16,7 @@
 
 from typing import Any, Mapping
 
-from etils.array_types import FloatArray
+from etils.array_types import FloatArray, IntArray
 import flax.linen as nn
 import jax
 import numpy as np
@@ -156,6 +156,34 @@ class GeoLocalizer(nn.Module):
         batch['image_pixels'], *args, **kwargs
     )
     return logits, tokens
+
+  def topk_similarities(
+      self,
+      logits: FloatArray['B D'],
+      cell_codes: FloatArray['N|N//ND D'],
+      k: int,
+  ) -> tuple[FloatArray['B N'], IntArray['B N']]:
+    """Computes similarity to cell codes."""
+    if self.config.get('shard_codes', False) and not self.is_initializing():
+      neg_sim, neg_idx = distributed.distributed_topk(
+          logits,
+          cell_codes,
+          k=k,
+          ascending=False,
+          recall_target=self.config.get('topk_recall_target', None),
+          final_topk=False,
+      )
+      return neg_sim, neg_idx
+    else:
+      logits = jnp.expand_dims(logits, axis=-2)
+      cell_codes = cell_codes[None]
+      return misc.compute_similarity(
+          logits,
+          cell_codes,
+          normalize=False,
+      )[
+          ..., 0
+      ], jnp.arange(self.num_cells)[None].repeat(logits.shape[0], axis=0)
 
   @nn.compact
   def encode_aerial(
@@ -351,6 +379,118 @@ class GeoLocalizer(nn.Module):
         target_name='aerialsv',
     )
     pred['aerial_sv_stochastic_probs'] = aerial_sv_probs
+
+    # Compute SV-CC similarity.
+    pos_idxs = {
+        'sv': batch['adjacent_cell_idx'],
+        'aerial': batch['aerial']['adjacent_cell_idx'],
+    }
+    all_logits = {
+        'sv': pred['logits'],
+        'aerial': pred['aerial_logits_p'],
+    }
+    for name, logits in all_logits.items():
+      cell_codes = self.get_cell_codes(self.cell_code_dim)
+      if self.config.get(f'detach_{name}_cell_codes', False):
+        cell_codes = jax.lax.stop_gradient(cell_codes)
+      pos_sim = None
+      if self.config.get('masked_expsum') and not self.is_initializing():
+        assert self.config.get('shard_codes', False)
+        shard_max = distributed.max_and_masked_expsum(
+            logits,
+            batch['latlng'],
+            cell_codes,
+            self.cell_centers,
+            normalize=False,
+            beta=self.config.get('multi_similarity_beta', 50.0),
+            base=self.config.get('multi_similarity_base', 0.0),
+            required_idx=pos_idxs[name],
+        )
+        masked_expsum = shard_max['expsum']
+        best_cell_idx = shard_max['best_idx']
+        if 'pos_sim' in shard_max:
+          pos_sim = shard_max['pos_sim']
+      else:
+        if self.config.get('topk') and self.config.topk < cell_codes.shape[0]:
+          all_sim, all_idx = self.topk_similarities(
+              logits, cell_codes, k=self.config.topk
+          )
+        else:
+          all_sim = self.compute_similarity_to_cell_codes(logits, cell_codes)
+          all_idx = jnp.arange(self.num_cells)[None].repeat(
+              logits.shape[0], axis=0
+          )
+          pos_sim = jnp.take_along_axis(all_sim, pos_idxs[name], axis=-1)
+        pred[f'{name}_sim'] = all_sim
+
+        valid_negatives = jax.vmap(lambda x, y: ~jnp.isin(x, y) & (x > -1))(
+            all_idx,
+            pos_idxs[name],
+        ) & (all_idx > -1)
+
+        if self.config.get('filter_by_distance', False):
+          cell_centers = jnp.take_along_axis(
+              self.cell_centers[None],
+              all_idx[..., None],
+              axis=-2,
+          )
+          sv_cc_dist = misc.haversine_distance(
+              cell_centers,
+              batch['latlng'][:, None],
+          )[..., 0]
+          sv_cc_mask = sv_cc_dist > self.config.get(
+              'cc_dist_threshold', self.config.get('same_cell_threshold', 200.0)
+          )
+          valid_negatives = sv_cc_mask
+        neg_sim = jnp.where(valid_negatives, all_sim, -jnp.inf)
+        masked_expsum = (
+            valid_negatives
+            * jnp.exp(
+                (neg_sim - self.config.get('multi_similarity_base', 0.0))
+                * self.config.get('multi_similarity_beta', 50.0)
+            )
+        ).sum(-1)
+
+        best_local_idx = jnp.argmax(all_sim, axis=-1, keepdims=True)
+        best_cell_idx = jnp.take_along_axis(all_idx, best_local_idx, axis=-1)[
+            ..., 0
+        ]
+
+      if pos_sim is None:
+        if cell_codes.shape[-1] < logits.shape[-1]:
+          logits = logits[..., : cell_codes.shape[-1]]
+          if self.config.get('l2_normalize', False):
+            logits = misc.l2_normalize(logits)
+        if self.config.get('shard_codes', False) and not self.is_initializing():
+          pos_cc = distributed.sharded_batched_gather(cell_codes, pos_idxs[name])
+        else:
+          pos_cc = jnp.take_along_axis(
+              cell_codes[None],
+              pos_idxs[name][..., None],
+              axis=-2,
+          )
+
+        pos_sim = misc.compute_similarity(
+            logits[..., None, :],
+            pos_cc,
+            normalize=False,
+        )[..., 0]
+
+      pred[f'{name}_masked_expsum'] = masked_expsum
+
+      temperature = getattr(self, f'{name}_temperature')
+
+      pred[f'{name}_cell_idx'] = best_cell_idx
+      pred[f'{name}_best_cell_idx'] = pred['sv_cell_idx']
+      pred[f'{name}_temperature'] = temperature[None].repeat(
+          logits.shape[0], axis=0
+      )
+
+      pred[f'{name}_pos_sim'] = pos_sim
+      pred[f'{name}_pos_idxs'] = pos_idxs[name]
+
+    if 'cell_idx' in batch:
+      pred['gt_cell_idx'] = batch['cell_idx']
     return pred
 
 
@@ -405,18 +545,124 @@ class GeoLocalizerModel(base.BaseModel):
       self,
       pred: types.Predictions,
       batch: types.Batch,
+      model_params: jnp.ndarray | None = None,
+      model_state: Any | None = None,
+      learning_rates: types.LearningRates | None = None,
   ) -> types.LossMetricsTuple:
-    sv_aerial_losses, sv_aerial_metrics = self.stochastic_loss_metrics_function(
-        pred['sv_aerial_stochastic_probs'], batch
-    )
-    aerial_sv_losses, aerial_sv_metrics = self.stochastic_loss_metrics_function(
-        pred['aerial_sv_stochastic_probs'], batch, prefix='aerial_sv_'
-    )
-    losses = {**sv_aerial_losses, **aerial_sv_losses}
-    metrics = {
-        **sv_aerial_metrics,
-        **aerial_sv_metrics,
-    }
+    losses, metrics = {}, {}
+    batch = flatten_batch(batch)
+    gt_cell_idx = batch['cell_idx']
+    # Log metrics of gt cell.
+    for name in ['sv', 'aerial']:
+      gt_sim_l2 = (
+          pred[f'{name}_pos_sim']
+          * (pred[f'{name}_pos_idxs'] == gt_cell_idx[:, None])
+      ).sum(-1)
+      losses[f'{name}_sim_l2'] = gt_sim_l2
+      metrics[f'{name}_precision'] = (
+          gt_cell_idx == pred[f'{name}_cell_idx']
+      ).astype(jnp.float32)
+    
+    # Log distance metrics of best cell.
+    sv_pred_cc_dist = misc.haversine_distance(
+        self.s2cell_centers_ll[batch['cell_idx']],
+        self.s2cell_centers_ll[pred['sv_best_cell_idx']],
+    )[..., 0]
+
+    metrics = metrics | misc.distance_metrics(sv_pred_cc_dist)
+    if 'sv_aerial_cc_multi_similarity' in self.config.compose_loss:
+      ms_loss = misc.MultiSimilarityLoss(
+          alpha=self.config.get('multi_similarity_alpha', 2.0),
+          beta=self.config.get('multi_similarity_beta', 100.0),
+          base=self.config.get('multi_similarity_base', 0.2),
+          margin=self.config.get('multi_similarity_margin', 0.0),
+      )
+      # Add SV-Aerial similarities.
+      pos_sims = {}
+      for name, stochastic_pred in {
+          'sv-a': pred['sv_aerial_stochastic_probs'],
+          'a-sv': pred['aerial_sv_stochastic_probs'],
+      }.items():
+        if self.config.get('multi_similarity_factors', 'all') != 'all':
+          if name not in self.config.multi_similarity_factors:
+            continue
+        valid = ~stochastic_pred['duplicates']
+        similarity = stochastic_pred['similarity']
+        ms_loss.add_with_indices(
+            similarity,
+            stochastic_pred['gt_index'][:, None],
+            where=valid,
+            add_positives=False,
+        )
+        pos_sims[name] = stochastic_pred['gt_similarity']
+
+      # Add SV Proxy similarities.
+      for name, prefix in {'sv-cc': 'sv', 'a-cc': 'aerial'}.items():
+        if self.config.get('multi_similarity_factors', 'all') != 'all':
+          if name not in self.config.multi_similarity_factors:
+            continue
+        proxy_pos = self.config.get(
+            f'{prefix}_multi_similarity_proxy_positives',
+        )
+        weights = 1.0
+        if proxy_pos == 'cell' or proxy_pos is None:
+          gt_idx = batch['cell_idx'][:, None]
+        elif proxy_pos == 'frustum':
+          gt_idx = batch['frustum_cell_idx']
+        elif proxy_pos == 'adjacent':
+          if prefix == 'sv':
+            gt_idx = batch['adjacent_cell_idx']
+            weights = batch['adjacent_weights']
+          elif prefix == 'aerial':
+            gt_idx = batch['aerial']['adjacent_cell_idx']
+            weights = batch['aerial']['adjacent_weights']
+          else:
+            raise ValueError(f'Unknown prefix for adjacent: {prefix}')
+          weights = jnp.where(gt_idx > -1, weights, 0)
+          weights = (
+              (pred[f'{prefix}_pos_idxs'][..., None] == gt_idx[..., None, :])
+              * weights[..., None, :]
+          ).sum(-1)
+        else:
+          raise ValueError(f'Unknown proxy_pos: {proxy_pos}')
+
+        pos_weights = jax.vmap(lambda x, y: jnp.isin(x, y) & (x > -1))(
+            pred[f'{prefix}_pos_idxs'], gt_idx
+        )
+
+        if (
+            self.config.get('multi_similarity_mean_pos_sim', False)
+            and proxy_pos != 'adjacent'
+        ):
+          # We actually do this! (SV)
+          pos_sim = misc.masked_mean(
+              pred[f'{prefix}_pos_sim'], pos_weights * weights, axis=-1
+          )
+        else:
+          pos_sim = (pos_weights * weights * pred[f'{prefix}_pos_sim']).sum(-1)
+        metrics[f'{prefix}_area_pos_sim'] = pos_sim
+        metrics[f'{prefix}_area_size'] = pos_weights.sum(-1)
+        pos_sims[name] = pos_sim
+        ms_loss.neg.append(pred[f'{prefix}_masked_expsum'])
+
+      # Add the positive edges to the loss.
+      if 'a-cc' in pos_sims:
+        # A-CC positives
+        ms_loss.pos.append(ms_loss.pos_scale(pos_sims['a-cc']))
+        ms_loss.num_positives += 1
+      if 'sv-a' in pos_sims:
+        ms_loss.pos.append(ms_loss.pos_scale(pos_sims['sv-a']))
+      if 'sv-cc' in pos_sims:
+        ms_loss.pos.append(ms_loss.pos_scale(pos_sims['sv-cc']))
+      ms_loss.num_positives += 2
+
+      ms_pos, ms_neg = ms_loss.compute()
+      losses['sv_aerial_cc_multi_similarity'] = ms_pos + ms_neg
+      losses['sv_aerial_cc_multi_similarity_pos'] = ms_pos
+      losses['sv_aerial_cc_multi_similarity_neg'] = ms_neg
+
+      metrics['sv_aerial_cc_valid_negatives'] = ms_loss.num_negatives
+      metrics['sv_aerial_cc_valid_positives'] = ms_loss.num_positives
     return losses, metrics
 
   def loss_metrics_function(

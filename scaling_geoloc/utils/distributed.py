@@ -17,7 +17,7 @@
 
 from collections.abc import Sequence
 import time
-from typing import Callable
+from typing import Callable, Any, Mapping
 from absl import logging
 from etils.array_types import BoolArray
 from etils.array_types import FloatArray
@@ -30,6 +30,16 @@ from scenic.dataset_lib import dataset_utils
 from scenic.train_lib import train_utils
 import tqdm
 from scaling_geoloc.utils import misc
+
+
+def to_device_safe(data: Any, device: jax.Device) -> Any:
+  def maybe_put_to_device(x):
+    try:
+      return jax.device_put(x, device)
+    except TypeError:
+      return x
+
+  return jax.tree.map(maybe_put_to_device, data)
 
 
 def default_pmap_sharding(
@@ -483,3 +493,113 @@ def pmap_self_topk(
   return jnp.concatenate(all_sim, axis=1), jnp.concatenate(
       all_neighbors, axis=1
   )
+
+
+def sharded_argmax(
+    x: FloatArray['ND*B N//ND'],
+) -> tuple[FloatArray['B'], IntArray['B']]:
+  """Sharded argmax."""
+
+  best_idx_on_device = jnp.argmax(
+      jax.lax.stop_gradient(x), axis=-1, keepdims=True
+  )
+  best_sim_on_device = jnp.take_along_axis(
+      jax.lax.stop_gradient(x), best_idx_on_device, axis=-1
+  )
+  best_sims, best_idxs = [
+      jax.lax.all_to_all(
+          x,
+          axis_name='batch',
+          tiled=True,
+          split_axis=0,
+          concat_axis=len(x.shape) - 1,
+      )
+      for x in [best_sim_on_device, best_idx_on_device]
+  ]
+  best_device_idx = jnp.argmax(best_sims, axis=-1, keepdims=True)
+  best_idx = jnp.take_along_axis(best_idxs, best_device_idx, axis=-1)
+  best_sim = jnp.take_along_axis(best_sims, best_device_idx, axis=-1)
+  # Add device offset.
+  best_idx = best_idx + best_device_idx * x.shape[-1]
+  return best_sim[..., 0], best_idx[..., 0]
+
+
+def max_and_masked_expsum(
+    batch_logits: FloatArray['B D'],  # total K dimensions
+    batch_latlng: FloatArray['B 2'],  # total K dimensions
+    sharded_logits: FloatArray['N//ND D'],  # total K dimensions
+    global_latlng: FloatArray['N 2'],  # total K dimensions
+    normalize: bool = False,
+    beta: float = 1.0,
+    base: float = 0.0,
+    distance_threshold: float | None = None,
+    required_idx: IntArray['B K'] | None = None,
+) -> Mapping[str, Any]:
+  """Computes the similarity between batch logits and sharded logits."""
+  # Gather batch logits across devices.
+  all_logits = jax.lax.all_gather(
+      jnp.expand_dims(batch_logits, axis=-2),
+      axis_name='batch',
+      tiled=True,  # Concat in axis 0.
+  )  # ND*B x ... x D
+
+  # Compute similarity to sharded cell codes per device.
+  similarity = misc.compute_similarity(
+      all_logits,  # ND*B x 1 x D
+      sharded_logits[None],  # Add device dim: 1 x N // ND x D
+      normalize=normalize,
+  )[..., 0]
+
+  best_sim, best_idx = sharded_argmax(similarity)
+
+  pos_sim = None
+  if required_idx is not None:
+    size_per_shard = similarity.shape[-1]
+    device_offset = jax.lax.axis_index('batch') * size_per_shard
+    all_required_idx = (
+        jax.lax.all_gather(required_idx, axis_name='batch', tiled=True)
+        - device_offset
+    )  # ND*B x K
+    valid = (all_required_idx >= 0) & (all_required_idx < size_per_shard)
+    pos_sim = jnp.take_along_axis(
+        similarity, all_required_idx, axis=-1, fill_value=0.0
+    )
+    pos_sim = jnp.where(valid, pos_sim, 0.0)
+    pos_sim = jax.lax.psum_scatter(pos_sim, axis_name='batch', tiled=True)
+
+    # Remove positives from sum.
+    oob_required_idx = jnp.where(
+        all_required_idx < 0, similarity.shape[-1], all_required_idx
+    )
+    similarity = jnp.put_along_axis(
+        similarity,
+        oob_required_idx,
+        -jnp.inf,
+        axis=-1,
+        mode='drop',
+        inplace=False,
+    )
+
+  if distance_threshold is not None:
+    all_latlng = jax.lax.all_gather(
+        batch_latlng, axis_name='batch', tiled=True  # Concat in axis 0.
+    )  # ND*B x ... x 2
+    latlng_on_device = global_latlng.reshape((jax.device_count(), -1, 2))
+    distances = misc.haversine_distance(  # ND*B x N//ND
+        jnp.expand_dims(all_latlng, axis=-2),
+        latlng_on_device[jax.lax.axis_index('batch')][None],
+    )[..., 0]
+    valid_negatives = distances > distance_threshold
+    similarity = jnp.where(valid_negatives, similarity, -jnp.inf)
+
+  expsum = jnp.exp((similarity - base) * beta).sum(-1)
+  # Similarity is ND*B x ... x N // ND
+  expsum = jax.lax.psum_scatter(expsum, axis_name='batch', tiled=True)
+  output = {
+      'best_sim': best_sim,
+      'best_idx': best_idx,
+      'expsum': expsum,
+  }
+  if pos_sim is not None:
+    output['pos_sim'] = pos_sim
+  return output
