@@ -194,7 +194,7 @@ def create_dataset(
         dataset_config.data_dir,
         dataset_config.dirname,
     )
-    data_source = tfds.builder_from_directory(dataset_path)[split]
+    data_source = tfds.builder_from_directory(dataset_path).as_data_source()[split]
     data_source = combined_data_source.CombinedDataSource([data_source])
     # Add dataset index to batch.
     data_source = indexed_data_source.IndexedDataSource(data_source)
