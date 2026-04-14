@@ -15,18 +15,79 @@
 """Geometry utils."""
 
 import dataclasses
+import dataclass_array as dca
 
 from etils.array_types import BoolArray
 from etils.array_types import FloatArray
 import jax.numpy as jnp
 import jaxcam
+from typing import TypeAlias, Union
 from scaling_geoloc.utils import hidden_helpers
 from scaling_geoloc import types
+import numpy as np
 
-MaskedPoints2D = tuple[FloatArray["... 2"], BoolArray["... 1"]]
-MaskedPoints2DAndDepth = tuple[
+MaskedPoints2D: TypeAlias = tuple[FloatArray["... 2"], BoolArray["... 1"]]
+MaskedPoints2DAndDepth: TypeAlias = tuple[
     FloatArray["... 2"], BoolArray["... 1"], FloatArray["... 1"]
 ]
+Points2D: TypeAlias = FloatArray['... n 2']
+RotationMatrix2D: TypeAlias = FloatArray['... 2 2']
+Angle: TypeAlias = FloatArray['...']
+Point2D: TypeAlias = FloatArray['... 2']
+
+
+class Transform2D(dca.DataclassArray):  # pytype: disable=base-class-error
+  """SE(2) transformation with 2-DoF translation and 1-DoF rotation.
+
+  Attributes:
+    angle: Rotation angle, in radians.
+    t: 2D translation vector.
+  """
+
+  angle: Angle
+  t: Point2D
+
+  @classmethod
+  def from_radians(cls, angle: Angle, t: Point2D) -> 'Transform2D':
+    return cls(angle=angle, t=t)
+
+  @property
+  def R(self) -> RotationMatrix2D:
+    cos = self.xnp.cos(self.angle)
+    sin = self.xnp.sin(self.angle)
+    R_flat = self.xnp.stack([cos, -sin, sin, cos], -1)
+    return R_flat.reshape(*self.shape, 2, 2)
+
+  @property
+  def inv(self) -> 'Transform2D':
+    R_inv = self.R.swapaxes(-1, -2)
+    t_inv = -self.xnp.einsum('...ij,...j->...i', R_inv, self.t)
+    return self.__class__(angle=-self.angle, t=t_inv)
+
+  def magnitude(self) -> tuple[FloatArray, FloatArray]:
+    dr = self.xnp.rad2deg(self.xnp.abs(self.angle)) % 360
+    dr = self.xnp.minimum(dr, 360 - dr)
+    dt = self.xnp.linalg.norm(self.t, axis=-1)
+    return dr, dt
+
+  def transform(self, points: Points2D) -> Points2D:
+    points = self.xnp.einsum('...ij,...nj->...ni', self.R, points)
+    return self.t[..., None, :] + points
+
+  def compose(self, other: 'Transform2D') -> 'Transform2D':
+    angle = self.angle + other.angle
+    t = self.t + self.xnp.einsum('...ij,...j->...i', self.R, other.t)
+    return self.__class__(angle=angle, t=t)
+
+  def __matmul__(
+      self, other: Union[Points2D, 'Transform2D']
+  ) -> Union[Points2D, 'Transform2D']:
+    if isinstance(other, (jnp.ndarray, np.ndarray)):
+      return self.transform(other)
+    elif isinstance(other, Transform2D):
+      return self.compose(other)
+    else:
+      raise TypeError(f'Unexpected type: {type(other)}')
 
 
 def project_points(

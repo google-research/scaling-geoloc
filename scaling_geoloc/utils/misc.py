@@ -29,7 +29,8 @@ import jaxcam
 import numpy as np
 import scipy
 from sklearn import decomposition
-from google3.location.visualmapping.experimental.lemming.utils import geometry
+
+from scaling_geoloc.utils import geometry
 
 
 def filter_dict(
@@ -1008,7 +1009,6 @@ def l2_norm(
     x: FloatArray['... D'], y: FloatArray['... D']
 ) -> FloatArray['... 1']:
   return ((x - y) ** 2).sum(-1, keepdims=True)
-
 
 
 def log_sinkhorn_iterations(
