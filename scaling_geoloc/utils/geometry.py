@@ -14,11 +14,14 @@
 
 """Geometry utils."""
 
+import dataclasses
+
 from etils.array_types import BoolArray
 from etils.array_types import FloatArray
 import jax.numpy as jnp
 import jaxcam
 from scaling_geoloc.utils import hidden_helpers
+from scaling_geoloc import types
 
 MaskedPoints2D = tuple[FloatArray["... 2"], BoolArray["... 1"]]
 MaskedPoints2DAndDepth = tuple[
@@ -85,3 +88,51 @@ def project_points(
   valid = valid & (pixel_x < camera.image_size[0])
   valid = valid & (pixel_y < camera.image_size[1])
   return pixels, valid[..., None], local_z[..., None]
+
+
+def create_jaxcam(
+    cam_t_w: FloatArray['... 4 4'],
+    intrinsics: types.DataDict | jnp.ndarray,
+    is_fisheye: bool = True,
+    use_inverted_distortion: bool = False,
+) -> jaxcam.Camera:
+  """Create a jaxcam.Camera from a 4x4 pose matrix and intrinsics."""
+  cam_r_w = cam_t_w[..., :3, :3]
+  w_p_cam = jnp.linalg.inv(cam_t_w)[..., :3, -1]
+  cam = jaxcam.Camera.create(
+      orientation=cam_r_w,
+      position=w_p_cam,
+      focal_length=intrinsics['K'][..., 0, 0],
+      principal_point=intrinsics['K'][..., :2, -1],
+      image_size=jnp.stack(
+          [intrinsics['width'], intrinsics['height']], axis=-1
+      ),
+      radial_distortion=None,
+      tangential_distortion=(
+          None
+          if use_inverted_distortion
+          else intrinsics['tangential_distortion']
+      ),
+      skew=jnp.zeros_like(intrinsics['K'][..., 0, 1]),
+      pixel_aspect_ratio=intrinsics['K'][..., 1, 1]
+      / intrinsics['K'][..., 0, 0],
+      is_fisheye=is_fisheye,
+  )
+  radial_distortion = jnp.concatenate(
+      [
+          intrinsics['radial_distortion'],
+          jnp.zeros_like(intrinsics['radial_distortion'][..., -1:]),
+      ],
+      axis=-1,
+  )
+  if use_inverted_distortion:
+    radial_distortion = jaxcam.invert_radial_distortion_coefficients(
+        radial_distortion
+    )
+
+  # Manually set the radial distortion to avoid hidden padding.
+  return dataclasses.replace(
+      cam,
+      radial_distortion=radial_distortion,
+      use_inverted_distortion=use_inverted_distortion,
+  )
