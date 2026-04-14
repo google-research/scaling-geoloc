@@ -17,55 +17,17 @@
 import importlib
 from typing import Any, Type
 
-from scaling_geoloc.scenic.evals import base_eval
-from scaling_geoloc.scenic.models import base
+from scaling_geoloc.evals import base_eval
+from scaling_geoloc.models import base
 
 
 MODELS = {
-    'depth_unet': ('depth_unet', 'DepthUNetModel'),
-    'depth_dpt': ('depth_dpt', 'DepthDPTModel'),
-    'mae_fomo': ('mae_fomo', 'MaskedAutoEncoderModel'),
-    'mae_multiview': ('mae_multiview', 'MultiViewMaskedAutoEncoderModel'),
-    'dino': ('dino', 'ViTDINOModel'),
-    'scenebot': ('scene_bot', 'SceneBotModel'),
-    'multiview_distill': ('multiview_distill', 'ViTMultiviewModel'),
-    'mae3d': ('mae3d', 'MAE3DModel'),
-    'dino3d': ('dino3d', 'ViTDINO3DModel'),
-    'ijepa': ('ijepa', 'ViTIJEPAModel'),
-    'scene_net': ('scene_net', 'SceneNetModel'),
-    'cell_code': ('cell_code', 'CellCodeRetrievalModel'),
-    'hierarchical_cell_code': (
-        'hierarchical_cell_code',
-        'HierarchicalCellCodeRetrievalModel',
-    ),
-    'recurrent_cell_code': (
-        'recurrent_cell_code',
-        'RecurrentCellCodeRetrievalModel',
-    ),
-    'sv_aerial': ('sv_aerial', 'SVAerialRetrievalModel'),
-    'sv_aerial_code': ('sv_aerial_code', 'SVAerialCellCodeRetrievalModel'),
-    'sv_aerial_code_largescale': (
-        'sv_aerial_code_largescale',
-        'SVAerialCellCodeRetrievalModel',
-    ),
-    'sv_aerial_code_implicit': (
-        'sv_aerial_code_implicit',
-        'SVAerialCodeImplicitModel',
-    ),
-    'sv_aerial_hierarchical_code': (
-        'sv_aerial_hierarchical_code',
-        'SVAerialHierarchicalCellCodeRetrievalModel',
-    ),
+    'hybrid_geolocalization': ('hybrid_geolocalization', 'GeoLocalizerModel'),
     'image_retrieval': ('image_retrieval', 'ImageRetrievalModel'),
-    'location_encoder': ('location_encoder', 'LocationEncoderModelWrapper'),
-    'geoclip': ('geoclip', 'GeoCLIPModel'),
 }
 
 EVALS = {
-    'knn_imagenet': ('knn_imagenet', 'KNNImageNetEval'),
     'retrieval': ('retrieval', 'RetrievalEvaluation'),
-    'correspondences': ('correspondences', 'CorrespondenceEvaluation'),
-    'class_cooccurrence': ('class_cooccurrence', 'ClassCooccurrenceEvaluation'),
 }
 
 
