@@ -24,9 +24,9 @@ import jax.numpy as jnp
 import jaxtyping as jt
 import ml_collections
 
-from scaling_geoloc.scenic import types
-from scaling_geoloc.scenic.models import base
-from scaling_geoloc.scenic.models import vit
+from scaling_geoloc import types
+from scaling_geoloc.models import base
+from scaling_geoloc.models import vit
 from scaling_geoloc.utils import augmentations
 from scaling_geoloc.utils import misc, distributed
 
@@ -562,7 +562,7 @@ class GeoLocalizerModel(base.BaseModel):
       metrics[f'{name}_precision'] = (
           gt_cell_idx == pred[f'{name}_cell_idx']
       ).astype(jnp.float32)
-    
+
     # Log distance metrics of best cell.
     sv_pred_cc_dist = misc.haversine_distance(
         self.s2cell_centers_ll[batch['cell_idx']],
