@@ -42,6 +42,15 @@ def to_device_safe(data: Any, device: jax.Device) -> Any:
   return jax.tree.map(maybe_put_to_device, data)
 
 
+def get_process_batch_size(batch_size: int) -> int:
+  if batch_size % jax.device_count() != 0:
+    raise ValueError(
+        f'batch_size {batch_size} must be divisible by '
+        f' jax.device_count() ({jax.device_count()})'
+    )
+  return (batch_size // jax.device_count()) * jax.local_device_count()
+
+
 def default_pmap_sharding(
     shape: tuple[int, ...],
     sharded_dim: int | None = 0,
