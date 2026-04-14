@@ -26,7 +26,7 @@ import jax.numpy as jnp
 import ml_collections
 from scenic.train_lib import train_utils
 
-from scaling_geoloc.scenic import types
+from scaling_geoloc import types
 
 
 class BaseModel:
