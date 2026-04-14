@@ -38,7 +38,6 @@ import numpy as np
 import optax
 from scenic.common_lib import debug_utils
 from scenic.dataset_lib import dataset_utils
-from scenic.google.xm import xm_utils
 from scenic.model_lib.base_models import model_utils
 from scenic.train_lib import lr_schedules
 from scenic.train_lib import optax as scenic_optax
@@ -46,13 +45,12 @@ from scenic.train_lib import optimizers
 from scenic.train_lib import pretrain_utils as scenic_pretrain_utils
 from scenic.train_lib import train_utils
 
-from scaling_geoloc.scenic import load
-from scaling_geoloc.scenic import types
-from scaling_geoloc.scenic.evals import base_eval
-from scaling_geoloc.scenic.models import base
-from scaling_geoloc.utils import io as lama_io
+from scaling_geoloc import load
+from scaling_geoloc import types
+from scaling_geoloc.evals import base_eval
+from scaling_geoloc.models import base
+from scaling_geoloc.utils import io
 from scaling_geoloc.utils import misc
-from google3.pyglib import gfile
 
 # Always use Orbax checkpointing.
 flax.config.update('flax_use_orbax_checkpointing', True)
@@ -459,7 +457,8 @@ def optimizer_from_config(
           or 'weightnorm_scale' in s
       )
     else:
-      mask_func = lambda x, s: True
+      def mask_func(x, s):
+        return True
     weight_decay_mask = optimizers.tree_map_with_names_values(mask_func, params)
     learning_rate_fn = lr_schedules.get_learning_rate_fn(lr_schedule.all)
     tx = optax.inject_hyperparams(optax.adamw)(
@@ -479,27 +478,24 @@ def optimizer_from_config(
   return tx, lr_fns, lr_schedule
 
 
-def load_from_xm(
-    xid: int,
-    wid: int,
+def reload_experiment(
+    checkpoint_path: str,
     config: ml_collections.ConfigDict | None = None,
 ) -> tuple[
     ml_collections.ConfigDict,
     base.BaseModel,
     train_utils.TrainState,
 ]:
-  """Loads model, config and train state from XM."""
-  reload_config, init_checkpoint_path = xm_utils.get_info_from_xmanager(
-      xid, wid
-  )
+  """Loads model, config and train state from workdir."""
+  reload_config = io.config_load(checkpoint_path)
 
   if config is None:
     config = reload_config
   else:
     config.update(reload_config)
 
-  dataset_meta_data = lama_io.npload(
-      os.path.join(init_checkpoint_path, 'dataset_meta_data.npz'),
+  dataset_meta_data = io.npload(
+      os.path.join(checkpoint_path, 'dataset_meta_data.npz'),
       allow_pickle=True,
   )
 
@@ -512,11 +508,10 @@ def load_from_xm(
   )
 
   restored_train_state = scenic_pretrain_utils.restore_pretrained_checkpoint(
-      init_checkpoint_path, assert_exist=True
+      checkpoint_path, assert_exist=True
   )
 
-  restored_train_state = restored_train_state.replace(metadata={})  # pytype: disable=attribute-error
-
+  restored_train_state = restored_train_state.replace(metadata={})
   return config, model, restored_train_state
 
 
@@ -873,18 +868,13 @@ class Experiment:
     logging.info('Done saving checkpoint. Now saving dataset meta data...')
     if jax.process_index() == 0:
       # Save dataset meta data.
-      with gfile.Open(
-          os.path.join(workdir, 'dataset_meta_data.npz'), 'wb'
-      ) as f:
-        np.save(
-            f,
-            {
-                k: v
-                for k, v in self.model.dataset_meta_data.items()
-                if k not in ['dummy_batch_fn']
-            },
-            allow_pickle=True,
-        )
+      io.npsave(
+          os.path.join(workdir, 'dataset_meta_data.npz'),
+          {k: v
+           for k, v in self.model.dataset_meta_data.items()
+           if k not in ['dummy_batch_fn']},
+          allow_pickle=True,
+      )
 
   def eval_loop(
       self,
@@ -1064,8 +1054,7 @@ class Experiment:
     write_note(f'First step compilations...\n{self.chrono.note}')
     for step in range(start_step + 1, total_steps + 1):
 
-      ##################### MINING ###################
-
+      # MINING
       if (
           mining_interval
           and ((step % mining_interval) == 1 or not mining_data)
@@ -1106,7 +1095,7 @@ class Experiment:
       for h in hooks:
         h(step)
       # Below are once-in-a-while ops -> pause.
-      ###################### LOG TRAIN SUMMARY ########################
+      # LOG TRAIN SUMMARY
       if (
           (step % log_summary_interval == 1)
           or (step == total_steps)
@@ -1145,7 +1134,7 @@ class Experiment:
         train_metrics, extra_training_logs = [], []
         self.chrono.resume()
 
-      ################### TRAIN VISUALIZATION #######################
+      # TRAIN VISUALIZATION
       if step % log_train_viz_interval == 1 and not self.config.get(
           'skip_train_viz'
       ):
@@ -1178,7 +1167,7 @@ class Experiment:
         writer.flush()
         self.chrono.resume()
 
-      ################### EVALUATION #######################
+      # EVALUATION
       if do_eval and (
           (step % log_eval_interval == 1 and step > self.config.skip_first_eval)
           or (step == total_steps)
@@ -1227,7 +1216,7 @@ class Experiment:
         jax.clear_caches()
         self.chrono.resume()
 
-      ################### TESTING #######################
+      # TESTING
       for eval_name, evaluator in self.test_evals.items():
         if (
             step % evaluator.config.eval_interval == 1
@@ -1262,7 +1251,7 @@ class Experiment:
           del test_visualizations
           jax.clear_caches()
 
-      ##################### CHECKPOINTING ###################
+      # CHECKPOINTING
       if (
           (
               (step % checkpoint_interval == 1 and step > 1)
