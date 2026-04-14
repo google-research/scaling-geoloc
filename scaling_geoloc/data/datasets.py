@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Dataset for training foundation models."""
+"""Dataset for geolocation tasks."""
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 import copy
 import functools
 import os
@@ -187,33 +187,23 @@ def create_dataset(
   valid_transformations = copy.deepcopy(transformations)
 
   def build_data_source(
-      locations: Sequence[str],
       split: str,
   ) -> grain.RandomAccessDataSource:
-    # Internal datasets from multiple locations.
-    base_path = os.path.join(
+    # Dataset composer.
+    dataset_path = os.path.join(
         dataset_config.data_dir,
         dataset_config.dirname,
     )
-    builders = [
-        tfds.builder_from_directory(os.path.join(base_path, location))
-        for location in locations
-    ]
-    data_sources = [builder.as_data_source(split) for builder in builders]
-    # Concatenate datasets from multiple locations.
-    data_source = combined_data_source.CombinedDataSource(data_sources)
+    data_source = tfds.builder_from_directory(dataset_path)[split]
+    data_source = combined_data_source.CombinedDataSource([data_source])
     # Add dataset index to batch.
     data_source = indexed_data_source.IndexedDataSource(data_source)
     return data_source
 
   train_data_source = build_data_source(
-      dataset_config.locations.train,
-      train_transformations,
       dataset_config.train_split,
   )
   valid_data_source = build_data_source(
-      dataset_config.locations.valid,
-      valid_transformations,
       dataset_config.valid_split,
   )
 
