@@ -18,8 +18,6 @@ import dataclasses
 import functools
 from typing import Any, Literal, TypeAlias
 from absl import logging
-from big_vision.models import vit as bv_vit
-import flax
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
@@ -29,10 +27,9 @@ import numpy as np
 from scenic.model_lib.base_models import base_model
 from scenic.model_lib.layers import attention_layers
 from scenic.model_lib.layers import nn_layers
-from scaling_geoloc.scenic import load_params
-from scaling_geoloc.scenic import types
-from scaling_geoloc.scenic.models import heads
-from scaling_geoloc.scenic.models import rope_encoding
+from scaling_geoloc import types
+from scaling_geoloc.models import heads
+from scaling_geoloc.models import rope_encoding
 from scaling_geoloc.utils import misc
 
 ValidIndex = jt.Int[jt.Array, 'L']
@@ -214,6 +211,91 @@ class ToTokenSequence(nn.Module):
     return x, rope_embeds
 
 
+class Encoder1DBlock(nn.Module):
+  """Transformer encoder layer.
+
+  Attributes:
+    mlp_dim: Dimension of the mlp on top of attention block.
+    num_heads: Number of self-attention heads.
+    dtype: The dtype of the computation (default: float32).
+    dropout_rate: Dropout rate.
+    attention_dropout_rate: Dropout for attention heads.
+    stochastic_depth: probability of dropping a layer linearly grows from 0 to
+      the provided value.
+    approximate_gelu: approximate parameter to GELU activation.
+
+  Returns:
+    output after transformer encoder block.
+  """
+
+  mlp_dim: int
+  num_heads: int
+  dtype: Any = jnp.float32
+  dropout_rate: float = 0.1
+  attention_dropout_rate: float = 0.1
+  stochastic_depth: float = 0.0
+  use_bias: bool = True
+  approximate_gelu: bool = True
+
+  @nn.compact
+  def __call__(
+      self,
+      inputs: jt.Float[jt.Array, 'B L C'],
+      deterministic: bool,
+      sow_attention_weights: bool = False,
+      attention_mask: jt.Bool[jt.Array, 'B H L L'] | None = None,
+      rope_embeds: (
+          tuple[jt.Float[jt.Array, 'S_ROPE D'], jt.Float[jt.Array, 'S_ROPE D']]
+          | None
+      ) = None,
+  ) -> jt.Bool[jt.Array, 'B L C']:
+    """Applies Encoder1DBlock module.
+
+    Args:
+      inputs: Input data.
+      deterministic: Deterministic or not (to apply dropout).
+      sow_attention_weights: Whether attention weights should be sowed.
+      attention_mask: Ignore attention weights where mask is ``False``.
+      rope_embeds: Optional rope embeddings to be used in attention.
+
+    Returns:
+      Output after transformer encoder block.
+    """
+    # Attention block.
+    assert inputs.ndim == 3
+    x = nn.LayerNorm(dtype=self.dtype)(inputs)
+    x = nn.MultiHeadDotProductAttention(
+        num_heads=self.num_heads,
+        dtype=self.dtype,
+        kernel_init=nn.initializers.xavier_uniform(),
+        broadcast_dropout=False,
+        deterministic=deterministic,
+        dropout_rate=self.attention_dropout_rate,
+        use_bias=self.use_bias,
+        attention_fn=lambda q, k, v, **kwargs: rope_encoding.dot_product_attention(
+            q, k, v, rope_embeds, **kwargs
+        ),
+    )(x, x, sow_weights=sow_attention_weights, mask=attention_mask)
+    x = nn.Dropout(rate=self.dropout_rate)(x, deterministic)
+    x = nn_layers.StochasticDepth(rate=self.stochastic_depth)(x, deterministic)
+    x = x + inputs
+
+    # MLP block.
+    y = nn.LayerNorm(dtype=self.dtype)(x)
+    y = attention_layers.MlpBlock(
+        mlp_dim=self.mlp_dim,
+        dtype=self.dtype,
+        dropout_rate=self.dropout_rate,
+        activation_fn=functools.partial(
+            nn.gelu, approximate=self.approximate_gelu
+        ),
+        kernel_init=nn.initializers.xavier_uniform(),
+        bias_init=nn.initializers.normal(stddev=1e-6),
+    )(y, deterministic=deterministic)
+    y = nn_layers.StochasticDepth(rate=self.stochastic_depth)(y, deterministic)
+    return y + x
+
+
 class ViTBackbone(nn.Module):
   """Vision Transformer model for training.
 
@@ -259,7 +341,6 @@ class ViTBackbone(nn.Module):
   freeze_backbone: bool = False  # Freeze entire backbone.
   train_last_layers: int = -1  # Train last n layers (-1: train all).
   normalization: Literal['none', 'imagenet', 'sat493m'] = 'imagenet'
-  use_big_vision_backbone: bool = False
   conv_embedding: bool = True
   head: str = 'projection'  # 'projection' or 'linear'
   head_config: ml_collections.ConfigDict = dataclasses.field(
@@ -347,7 +428,7 @@ class ViTBackbone(nn.Module):
 
     return None
 
-  def dino_backbone(
+  def forward_backbone(
       self,
       x: jt.Float[jt.Array, 'B H W C'],
       *,
@@ -358,7 +439,7 @@ class ViTBackbone(nn.Module):
       sow_attention: bool,
       extra_tokens: jt.Float[jt.Array, 'B M C'] | None,
   ) -> jt.Float[jt.Array, 'B L D']:
-    """DINO backbone."""
+    """Run backbone."""
 
     if self.normalization != 'none':
       x = x.at[..., :3].set(
@@ -428,28 +509,6 @@ class ViTBackbone(nn.Module):
 
     return backbone_output
 
-  def siglip_backbone(
-      self,
-      x: jt.Float[jt.Array, 'B H W C'],
-      *,
-      pooling: str,
-      dropout_rate: float,
-      dtype: Any,
-  ) -> tuple[jt.Float[jt.Array, 'B L D'], jt.Float[jt.Array, 'B D']]:
-    """SIGLIP backbone."""
-
-    # normalization
-    x = x.at[..., :3].set(x[..., :3] * 2.0 - 1.0)
-
-    _, out = bv_vit.Model(
-        pool_type=pooling,
-        dropout=dropout_rate,
-        dtype_mm=dtype,
-        name='bv_vit',
-    )(x)
-
-    return out['encoded']
-
   @nn.compact
   def __call__(
       self,
@@ -470,23 +529,15 @@ class ViTBackbone(nn.Module):
     if not pooling:
       pooling = self.pooling
 
-    if self.use_big_vision_backbone:
-      backbone_output = self.siglip_backbone(
-          x,
-          pooling=pooling,
-          dropout_rate=self.dropout_rate,
-          dtype=self.dtype,
-      )
-    else:
-      backbone_output = self.dino_backbone(
-          x,
-          train=train,
-          seqlen=seqlen,
-          mask=mask,
-          mask_mode=mask_mode,
-          sow_attention=sow_attention,
-          extra_tokens=extra_tokens,
-      )
+    backbone_output = self.forward_backbone(
+        x,
+        train=train,
+        seqlen=seqlen,
+        mask=mask,
+        mask_mode=mask_mode,
+        sow_attention=sow_attention,
+        extra_tokens=extra_tokens,
+    )
 
     if pooling == 'tok':
       # Keep only the output class token.
@@ -697,17 +748,7 @@ class ViTBackbone(nn.Module):
         logging.info('Loading pretrained weights: %s', pretrained_weights)
       else:
         logging.info('Loading pretrained checkpoint: %s', pretrained_checkpoint)
-      pretrained_params = flax.core.unfreeze(
-          load_params.load_params(
-              pretrained_weights,
-              pretrained_checkpoint,
-              model_params,
-          )
-      )
-
-      if pretrained_weights == 'dinov2_salad_b14':
-        salad_params = heads.SALAD.load_pretrained_params()
-        pretrained_params['output_projection'] = salad_params
+      raise NotImplementedError('Loading pretrained weights is not implemented.')
 
       def check_shape_equal(x, y) -> bool:
         is_shape_equal = x.shape == y.shape
@@ -724,322 +765,9 @@ class ViTBackbone(nn.Module):
     return model_params
 
 
-class Encoder1DBlock(nn.Module):
-  """Transformer encoder layer.
-
-  Attributes:
-    mlp_dim: Dimension of the mlp on top of attention block.
-    num_heads: Number of self-attention heads.
-    dtype: The dtype of the computation (default: float32).
-    dropout_rate: Dropout rate.
-    attention_dropout_rate: Dropout for attention heads.
-    stochastic_depth: probability of dropping a layer linearly grows from 0 to
-      the provided value.
-    approximate_gelu: approximate parameter to GELU activation.
-
-  Returns:
-    output after transformer encoder block.
-  """
-
-  mlp_dim: int
-  num_heads: int
-  dtype: Any = jnp.float32
-  dropout_rate: float = 0.1
-  attention_dropout_rate: float = 0.1
-  stochastic_depth: float = 0.0
-  use_bias: bool = True
-  approximate_gelu: bool = True
-
-  @nn.compact
-  def __call__(
-      self,
-      inputs: jt.Float[jt.Array, 'B L C'],
-      deterministic: bool,
-      sow_attention_weights: bool = False,
-      attention_mask: jt.Bool[jt.Array, 'B H L L'] | None = None,
-      rope_embeds: (
-          tuple[jt.Float[jt.Array, 'S_ROPE D'], jt.Float[jt.Array, 'S_ROPE D']]
-          | None
-      ) = None,
-  ) -> jt.Bool[jt.Array, 'B L C']:
-    """Applies Encoder1DBlock module.
-
-    Args:
-      inputs: Input data.
-      deterministic: Deterministic or not (to apply dropout).
-      sow_attention_weights: Whether attention weights should be sowed.
-      attention_mask: Ignore attention weights where mask is ``False``.
-      rope_embeds: Optional rope embeddings to be used in attention.
-
-    Returns:
-      Output after transformer encoder block.
-    """
-    # Attention block.
-    assert inputs.ndim == 3
-    x = nn.LayerNorm(dtype=self.dtype)(inputs)
-    x = nn.MultiHeadDotProductAttention(
-        num_heads=self.num_heads,
-        dtype=self.dtype,
-        kernel_init=nn.initializers.xavier_uniform(),
-        broadcast_dropout=False,
-        deterministic=deterministic,
-        dropout_rate=self.attention_dropout_rate,
-        use_bias=self.use_bias,
-        attention_fn=lambda q, k, v, **kwargs: rope_encoding.dot_product_attention(
-            q, k, v, rope_embeds, **kwargs
-        ),
-    )(x, x, sow_weights=sow_attention_weights, mask=attention_mask)
-    x = nn.Dropout(rate=self.dropout_rate)(x, deterministic)
-    x = nn_layers.StochasticDepth(rate=self.stochastic_depth)(x, deterministic)
-    x = x + inputs
-
-    # MLP block.
-    y = nn.LayerNorm(dtype=self.dtype)(x)
-    y = attention_layers.MlpBlock(
-        mlp_dim=self.mlp_dim,
-        dtype=self.dtype,
-        dropout_rate=self.dropout_rate,
-        activation_fn=functools.partial(
-            nn.gelu, approximate=self.approximate_gelu
-        ),
-        kernel_init=nn.initializers.xavier_uniform(),
-        bias_init=nn.initializers.normal(stddev=1e-6),
-    )(y, deterministic=deterministic)
-    y = nn_layers.StochasticDepth(rate=self.stochastic_depth)(y, deterministic)
-    return y + x
-
-
-class Decoder(nn.Module):
-  """ViT decoder.
-
-  Note: No position embeddings are added here, they are handled directly
-  in the MaskedAutoEncoder module.
-  """
-
-  mlp_dim: int
-  num_layers: int
-  num_heads: int
-  dropout_rate: float = 0.1
-  attention_dropout_rate: float = 0.1
-  stochastic_droplayer_rate: float = 0.0
-  dtype: jnp.dtype = jnp.float32
-
-  @nn.compact
-  def __call__(
-      self, x: jnp.ndarray, *, train: bool, mask: jnp.ndarray | None = None
-  ):
-    """Applies Transformer model on the inputs."""
-    assert x.ndim == 3
-    dtype = jax.dtypes.canonicalize_dtype(self.dtype)
-
-    x = nn.Dropout(rate=self.dropout_rate)(x, deterministic=not train)
-    for lyr in range(self.num_layers):
-      droplayer_p = (
-          lyr / max(self.num_layers - 1, 1)
-      ) * self.stochastic_droplayer_rate
-      x = Encoder1DBlock(
-          mlp_dim=self.mlp_dim,
-          num_heads=self.num_heads,
-          dropout_rate=self.dropout_rate,
-          attention_dropout_rate=self.attention_dropout_rate,
-          stochastic_depth=droplayer_p,
-          name=f'encoderblock_{lyr}',
-          dtype=dtype,
-      )(x, deterministic=not train, attention_mask=mask)
-    x = nn.LayerNorm(name='decoder_norm')(x)
-    return x
-
-
-class ViTDINOModel(base_model.BaseModel):
-  """Vision Transformer model for DINO training."""
+class ViTModel(base_model.BaseModel):
+  """Vision Transformer model for training."""
 
   def build_flax_model(self) -> nn.Module:
     model_dtype = getattr(jnp, self.config.get('model_dtype_str', 'float32'))
     return ViTBackbone.from_config(self.config.model, dtype=model_dtype)
-
-  def get_metrics_fn(self, split: str | None = None):
-    pass
-
-  def loss_function(
-      self,
-      logits_student: jt.Float[jt.Array, 'B*G K'],
-      logits_teacher: jt.Float[jt.Array, 'B*L K'],
-  ) -> float:
-    """Returns the DINO loss.
-
-    We do not apply weights on this loss because it is meant to be used only
-    at training (full batches without masked elements).
-    Args:
-      logits_student: Output of student in shape [batch * anchor_views, K].
-      logits_teacher: Output of teacher in shape [batch * {1, 2}, K].
-
-    Returns:
-      DINO loss.
-    """
-    targets = nn.softmax(logits_teacher, axis=-1)
-    dino_loss, n_loss_terms = 0.0, 0.0
-    bs = targets.shape[0] // 2
-    for i in range(2):
-      for j in range(2 + self.config.dataset_configs.num_local_views):
-        if i == j:
-          # We skip cases where student and teacher operate on the same view.
-          continue
-        loss = jnp.sum(
-            -targets[i * bs : (i + 1) * bs]
-            * nn.log_softmax(logits_student[j * bs : (j + 1) * bs], axis=-1),
-            axis=-1,
-        )
-        dino_loss += jnp.mean(loss)
-        n_loss_terms += 1
-    dino_loss /= n_loss_terms
-    return dino_loss  # pytype: disable=bad-return-type  # jnp-type
-
-
-class MultiViewBlock(nn.Module):
-  """Multi-view attention block."""
-
-  mlp_dim: int
-  num_heads: int
-  dtype: Any = jnp.float32
-  dropout_rate: float = 0.1
-  attention_dropout_rate: float = 0.1
-  stochastic_depth: float = 0.0
-  use_bias: bool = True
-  approximate_gelu: bool = True
-
-  @nn.compact
-  def __call__(
-      self,
-      tokens: jt.Float[jt.Array, 'B N L D'],
-      deterministic: bool,
-  ):
-    cls_encoder = Encoder1DBlock(
-        mlp_dim=self.mlp_dim,
-        num_heads=self.num_heads,
-        dropout_rate=self.dropout_rate,
-        attention_dropout_rate=self.attention_dropout_rate,
-        stochastic_depth=self.stochastic_depth,
-        use_bias=self.use_bias,
-        approximate_gelu=self.approximate_gelu,
-        name='cls_encoderblock',
-        dtype=self.dtype,
-    )
-
-    updated_cls_tokens = cls_encoder(
-        tokens[..., 0, :],
-        deterministic=deterministic,
-    )
-
-    updated_tokens = jnp.concatenate(
-        [
-            updated_cls_tokens[..., None, :],
-            tokens[..., 1:, :],
-        ],
-        axis=-2,
-    )
-
-    patch_encoder = Encoder1DBlock(
-        mlp_dim=self.mlp_dim,
-        num_heads=self.num_heads,
-        dropout_rate=self.dropout_rate,
-        attention_dropout_rate=self.attention_dropout_rate,
-        stochastic_depth=self.stochastic_depth,
-        use_bias=self.use_bias,
-        approximate_gelu=self.approximate_gelu,
-        name='patch_encoderblock',
-        dtype=self.dtype,
-    )
-
-    updated_tokens = patch_encoder(
-        jax.lax.collapse(updated_tokens, 0, -2),
-        deterministic=deterministic,
-    )
-
-    return updated_tokens.reshape(
-        *tokens.shape[:-2], *updated_tokens.shape[-2:]
-    )
-
-
-class MultiViewEncoder(nn.Module):
-  """Multi-view ViT encoder. Alternates global and local attention."""
-
-  mlp_dim: int
-  num_layers: int
-  num_heads: int
-  dropout_rate: float = 0.1
-  attention_dropout_rate: float = 0.1
-  stochastic_droplayer_rate: float = 0.0
-  dtype: jnp.dtype = jnp.float32
-
-  @nn.compact
-  def __call__(
-      self, x: jt.Float[jt.Array, 'B N L D'], *, train: bool
-  ) -> jt.Float[jt.Array, 'B N L D']:
-    """Applies Transformer model on the inputs."""
-    assert x.ndim == 4
-    dtype = jax.dtypes.canonicalize_dtype(self.dtype)
-
-    x = nn.Dropout(rate=self.dropout_rate)(x, deterministic=not train)
-    for lyr in range(self.num_layers):
-      droplayer_p = (
-          lyr / max(self.num_layers - 1, 1)
-      ) * self.stochastic_droplayer_rate
-      x = MultiViewBlock(
-          mlp_dim=self.mlp_dim,
-          num_heads=self.num_heads,
-          dropout_rate=self.dropout_rate,
-          attention_dropout_rate=self.attention_dropout_rate,
-          stochastic_depth=droplayer_p,
-          name=f'encoderblock_{lyr}',
-          dtype=dtype,
-      )(x, deterministic=not train)
-    x = nn.LayerNorm(name='decoder_norm')(x)
-    return x
-
-
-class ImageRetrievalViT(nn.Module):
-  """Image retrieval model using ViT backbone."""
-
-  config: ml_collections.ConfigDict
-  dtype: jnp.dtype = jnp.float32
-
-  def setup(self):
-    self.backbone = ViTBackbone.from_config(self.config.vit, self.dtype)
-    self.aggregator = heads.SALAD.from_config(
-        self.config.aggregator, self.dtype
-    )
-
-  def encode_multiview(
-      self,
-      batch: types.Batch,
-      *args,
-      train: bool = False,
-      **kwargs,
-  ) -> tuple[jt.Float[jt.Array, '... C'], jt.Float[jt.Array, '... L D']]:
-    """Extract a D-dimensional representation for each image."""
-    _, tokens = self.backbone.encode_multiview(
-        batch['image_pixels'], *args, train=train, **kwargs
-    )
-    if tokens.ndim == 4:
-      tokens = tokens.mean(axis=-3)
-    return self.aggregator(tokens, train=train), tokens
-
-  def __call__(
-      self,
-      batch: types.Batch,
-      train: bool = False,
-      debug: bool = False,
-  ) -> types.Predictions:
-    image_pixels = misc.concat_all('image_pixels', batch, axis=-4)
-    image_pixels_flat = jnp.reshape(
-        image_pixels, (-1, *image_pixels.shape[-3:])
-    )  # [BN, H, W, 3]
-    global_descriptors, tokens = self.encode_multiview(
-        {'image_pixels': image_pixels_flat}, train=train
-    )
-
-    return {
-        'global_descriptors': global_descriptors,
-        'tokens': tokens,
-        'augmented_pixels': image_pixels,
-    }
