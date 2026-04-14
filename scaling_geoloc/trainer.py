@@ -1003,6 +1003,9 @@ class Experiment:
         start_step, total_steps, self.config.batch_size, steps_per_epoch
     )
     logging.info('Starting training loop at step %d.', start_step + 1)
+    if lead_host and workdir is not None:
+      io.config_save(workdir, self.config)
+
     report_progress = periodic_actions.ReportProgress(
         num_train_steps=total_steps,
         writer=writer,
