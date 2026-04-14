@@ -245,3 +245,11 @@ class FilterMissingAerialData(grain.FilterTransform):
 
   def filter(self, data: types.DataDict) -> bool:
     return data.get('aerial', None) is not None
+
+
+class FilterInvalidCells(grain.FilterTransform):
+  """Remove examples with invalid cell indices."""
+
+  def filter(self, data: types.DataDict) -> bool:
+    cell_idx = data.get('cell_idx', None)
+    return cell_idx is not None and cell_idx >= 0
