@@ -69,7 +69,7 @@ class ResizeImageLike(grain.MapTransform):
 
     target_h, target_w = self.final_size
 
-    for scene in ['query', 'map']:
+    for scene in ['query', 'aerial']:
       if scene not in data:
         continue
       image_pixels = data[scene]['views']['image_pixels']
@@ -100,7 +100,7 @@ class CenterCropImageLike(grain.MapTransform):
       data: types.DataDict,
   ) -> types.DataDict:
     """Returns the center crop region from the provided cfg and images sizes."""
-    for scene in ['query', 'map']:
+    for scene in ['query', 'aerial']:
       if scene not in data:
         continue
       image_pixels = data[scene]['views']['image_pixels']
@@ -198,7 +198,7 @@ class ResizeAndPadImageLike(grain.MapTransform):
       )
     target_size = target_h
 
-    for scene in ['query', 'map']:
+    for scene in ['query', 'aerial']:
       if scene not in data:
         continue
 
