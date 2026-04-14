@@ -15,7 +15,6 @@
 """Geometry utils."""
 
 import dataclasses
-import dataclass_array as dca
 
 from etils.array_types import BoolArray
 from etils.array_types import FloatArray
@@ -36,7 +35,8 @@ Angle: TypeAlias = FloatArray['...']
 Point2D: TypeAlias = FloatArray['... 2']
 
 
-class Transform2D(dca.DataclassArray):  # pytype: disable=base-class-error
+@dataclasses.dataclass
+class Transform2D:
   """SE(2) transformation with 2-DoF translation and 1-DoF rotation.
 
   Attributes:
@@ -53,30 +53,30 @@ class Transform2D(dca.DataclassArray):  # pytype: disable=base-class-error
 
   @property
   def R(self) -> RotationMatrix2D:
-    cos = self.xnp.cos(self.angle)
-    sin = self.xnp.sin(self.angle)
-    R_flat = self.xnp.stack([cos, -sin, sin, cos], -1)
-    return R_flat.reshape(*self.shape, 2, 2)
+    cos = jnp.cos(self.angle)
+    sin = jnp.sin(self.angle)
+    R_flat = jnp.stack([cos, -sin, sin, cos], -1)
+    return R_flat.reshape(*self.angle.shape, 2, 2)
 
   @property
   def inv(self) -> 'Transform2D':
     R_inv = self.R.swapaxes(-1, -2)
-    t_inv = -self.xnp.einsum('...ij,...j->...i', R_inv, self.t)
+    t_inv = -jnp.einsum('...ij,...j->...i', R_inv, self.t)
     return self.__class__(angle=-self.angle, t=t_inv)
 
   def magnitude(self) -> tuple[FloatArray, FloatArray]:
-    dr = self.xnp.rad2deg(self.xnp.abs(self.angle)) % 360
-    dr = self.xnp.minimum(dr, 360 - dr)
-    dt = self.xnp.linalg.norm(self.t, axis=-1)
+    dr = jnp.rad2deg(jnp.abs(self.angle)) % 360
+    dr = jnp.minimum(dr, 360 - dr)
+    dt = jnp.linalg.norm(self.t, axis=-1)
     return dr, dt
 
   def transform(self, points: Points2D) -> Points2D:
-    points = self.xnp.einsum('...ij,...nj->...ni', self.R, points)
+    points = jnp.einsum('...ij,...nj->...ni', self.R, points)
     return self.t[..., None, :] + points
 
   def compose(self, other: 'Transform2D') -> 'Transform2D':
     angle = self.angle + other.angle
-    t = self.t + self.xnp.einsum('...ij,...j->...i', self.R, other.t)
+    t = self.t + jnp.einsum('...ij,...j->...i', self.R, other.t)
     return self.__class__(angle=angle, t=t)
 
   def __matmul__(
