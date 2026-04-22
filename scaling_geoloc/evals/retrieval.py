@@ -752,7 +752,7 @@ class RetrievalEvaluation(base_eval.BaseEval):
       # Get part of the index for this process.
       database = jax.tree.map(
           lambda x: x[
-              db_process_size * process_id : db_process_size * (process_id + 1)
+              db_process_size * process_id: db_process_size * (process_id + 1)
           ],
           database,
       )

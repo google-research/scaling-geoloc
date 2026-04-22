@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Trainer for LaMa models."""
+"""Trainer for geolocalization models."""
 
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 import functools

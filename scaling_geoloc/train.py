@@ -52,14 +52,9 @@ def main(
 
   pretrained_meta_data = None
   pretrained_train_state = None
-  if config.get('pretrained_xm') is not None:
-    if isinstance(config.pretrained_xm, ml_collections.ConfigDict):
-      xid, wid = config.pretrained_xm.xid, config.pretrained_xm.wid
-    else:
-      xid, wid = config.pretrained_xm
-    logging.info('Loading pretrained model from XM at (%d, %d).', xid, wid)
+  if config.get('pretrained_path') is not None:
     pretrained_config, pretrained_model, pretrained_train_state = (
-        trainer.load_from_xm(xid, wid)
+        trainer.reload_experiment(config.pretrained_path)
     )
     if config.get('pretrained_load_meta_data'):
       logging.info('Loading pretrained meta data.')

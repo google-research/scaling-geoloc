@@ -54,12 +54,6 @@ def get_augment_fn(
 
 def flatten_batch(batch: types.Batch, stride: int | None = None) -> types.Batch:
   """Simplifies a batch by removing unnecessary dimensions."""
-  batch = misc.filter_batch_for_jit(batch)
-  batch_views = jax.tree.map(
-      lambda x: x[:, 0],
-      batch['query']['views'],
-  )
-
   if stride is not None:
     batch_views = {
         k: (
@@ -553,7 +547,7 @@ class GeoLocalizerModel(base.BaseModel):
     batch = flatten_batch(batch)
     gt_cell_idx = batch['cell_idx']
     # Log metrics of gt cell.
-    for name in ['sv', 'aerial']:
+    for name in ['query', 'aerial']:
       gt_sim_l2 = (
           pred[f'{name}_pos_sim']
           * (pred[f'{name}_pos_idxs'] == gt_cell_idx[:, None])
