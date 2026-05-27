@@ -343,6 +343,7 @@ class ViTBackbone(nn.Module):
   normalization: Literal['none', 'imagenet', 'sat493m'] = 'imagenet'
   conv_embedding: bool = True
   head: str = 'projection'  # 'projection' or 'linear'
+  use_big_vision_backbone: bool = False
   head_config: ml_collections.ConfigDict = dataclasses.field(
       default_factory=ml_collections.ConfigDict
   )

@@ -25,10 +25,10 @@ import jax.numpy as jnp
 import jaxtyping as jt
 
 
-class NormalizeCoords(enum.StrEnum):
-  MIN = enum.auto()
-  MAX = enum.auto()
-  SEPARATE = enum.auto()
+class NormalizeCoords(str, enum.Enum):
+  MIN = 'min'
+  MAX = 'max'
+  SEPARATE = 'separate'
 
 
 class RopePositionEmbedding(nn.Module):

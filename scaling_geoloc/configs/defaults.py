@@ -361,7 +361,7 @@ def cross_view_retrieval(
   config = retrieval(batch_size)
   config.data.grain_num_workers_valid = num_workers
   config.data.grain_num_workers = num_workers
-  config.method = 'encode_multiview'
+  config.method = 'encode_query'
   config.method_db = 'encode_aerial'
   query_dirname, query_split = query
   database_dirname, database_split = database
@@ -393,7 +393,7 @@ def vpr_retrieval(
   config = retrieval(batch_size)
   config.data.grain_num_workers_valid = num_workers
   config.data.grain_num_workers = num_workers
-  config.method = 'encode_multiview'
+  config.method = 'encode_query'
   query_dirname, query_split = query
   database_dirname, database_split = database
   config.data.dirname = query_dirname
@@ -420,7 +420,7 @@ def cell_code_retrieval(
   config = retrieval(batch_size)
   config.data.grain_num_workers_valid = num_workers
   config.data.grain_num_workers = num_workers
-  config.method = 'encode_multiview'
+  config.method = 'encode_query'
   config.db_from_model = 'build_s2cell_database'
   config.data.dirname = dirname
   config.data.train_split = config.data.valid_split = split

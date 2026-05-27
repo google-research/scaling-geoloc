@@ -103,6 +103,7 @@ class GeoLocalizer(nn.Module):
     self.cell_code_dim = self.config.get(
         'cell_code_dim', self.backbone.output_dim()
     )
+    self.num_cells = self.cell_centers.shape[0]
 
   @nn.compact
   def get_cell_codes(self, cell_code_dim: int) -> FloatArray['N D']:
@@ -139,7 +140,7 @@ class GeoLocalizer(nn.Module):
           normalize=normalize,
       )[..., 0]
 
-  def encode_multiview(
+  def encode_query(
       self,
       batch: types.Batch,
       *args,
@@ -196,6 +197,8 @@ class GeoLocalizer(nn.Module):
         'l2_normalize_per_head', False
     )
     aerial_pixels = aerial_batch['image_pixels']
+    if aerial_pixels.ndim == 4:  # [B H W C] → [B 1 H W C]
+      aerial_pixels = aerial_pixels[:, None]
     logits, tokens = self.aerial_backbone.encode_multiview(
         aerial_pixels, *args, **kwargs
     )
@@ -325,7 +328,7 @@ class GeoLocalizer(nn.Module):
   ) -> types.Predictions:
     image_pixels, aerial_pixels = self.get_image_pixels(batch, train)
     batch = flatten_batch(batch, stride=None)
-    logits, _ = self.encode_multiview(
+    logits, _ = self.encode_query(
         {'image_pixels': image_pixels},
         train=train,
         sow_attention=self.config.get('sow_attention', False) and not train,
@@ -510,13 +513,13 @@ class GeoLocalizerModel(base.BaseModel):
       dataset_meta_data: dict[str, Any],
       dtype: jnp.dtype[Any] = jnp.float32,
   ):
+    self.s2cell_centers_ll = jnp.asarray(dataset_meta_data['cell_centers_ll'])
     super().__init__(config, dataset_meta_data, dtype)
     config = self.config.copy_and_resolve_references().unlock()
     aerial_patch = self.config.vit_aerial
     config.vit_aerial = config.vit.copy_and_resolve_references()
     config.vit_aerial.update(aerial_patch)
     self.config = config
-    self.s2cell_centers_ll = jnp.asarray(dataset_meta_data['cell_centers_ll'])
     self.flax_model = self.build_flax_model()
 
   def build_flax_model(self) -> nn.Module:

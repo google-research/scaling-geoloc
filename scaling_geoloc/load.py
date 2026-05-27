@@ -39,11 +39,11 @@ def get_class(basepath: str, modulename: str, classname: str) -> Any:
 
 def get_model(name: str) -> Type[base.BaseModel]:
   """Get a top-level model by name."""
-  basepath = 'scaling_geoloc.scenic.models.{}'
+  basepath = 'scaling_geoloc.models.{}'
   return get_class(basepath, *MODELS[name])
 
 
 def get_eval(name: str) -> Type[base_eval.BaseEval]:
   """Get a top-level eval by name."""
-  basepath = 'scaling_geoloc.scenic.evals.{}'
+  basepath = 'scaling_geoloc.evals.{}'
   return get_class(basepath, *EVALS[name])

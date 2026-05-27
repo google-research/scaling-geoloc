@@ -16,13 +16,12 @@
 
 import functools
 from typing import Any
-
-from big_vision import utils as bv_utils
 from etils.array_types import FloatArray
 import flax
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
+import numpy as np
 import jaxtyping as jt
 import ml_collections
 from scenic.model_lib.layers import attention_layers
@@ -52,7 +51,7 @@ def backbone_head(
     x = ProjectionHead(
         hidden_dim=head_config['head_hidden_dim'],
         bottleneck_dim=head_config['head_bottleneck_dim'],
-        output_dim=head_config['head_output_dim'],
+        output_dim=head_output_dim,
         normalize_last_layer=head_config['normalize_last_layer'],
         use_bn=head_config['use_bn'],
         approximate_gelu=head_config['approximate_gelu'],
@@ -300,7 +299,7 @@ class SALAD(nn.Module):
 
   @classmethod
   def load_pretrained_params(cls) -> dict[str, jnp.ndarray]:
-    pt_weights: dict[str, jt.Float[jt.Array, '...']] = bv_utils.npload(
+    pt_weights: dict[str, jt.Float[jt.Array, '...']] = np.load(
         'pretrained_weights/dino_salad.npz'
     )
     pt_weights = {
