@@ -54,6 +54,10 @@ def get_augment_fn(
 
 def flatten_batch(batch: types.Batch, stride: int | None = None) -> types.Batch:
   """Simplifies a batch by removing unnecessary dimensions."""
+  batch_views = {
+      'image_pixels': batch['query']['image'],
+      **{k: v for k, v in batch['query'].items() if k != 'image'},
+  }
   if stride is not None:
     batch_views = {
         k: (
@@ -203,7 +207,7 @@ class GeoLocalizer(nn.Module):
     """Preprocess the image pixels (crop, augment)."""
     batch = flatten_batch(batch, stride=None)
     image_pixels = batch['image_pixels']
-    aerial_pixels = batch['aerial']['rgb']
+    aerial_pixels = batch['aerial']['image']
 
     # Crop to multiple of patch size to avoid boundary effects.
     image_pixels = misc.crop_to_multiple(
@@ -360,13 +364,13 @@ class GeoLocalizer(nn.Module):
         logits,
         batch['latlng'],
         aerial_logits_p,
-        batch['aerial']['center_ll'],
+        batch['aerial']['latlng'],
         batch,
     )
     # Inverse probability from aerial to all SV in batch.
     aerial_sv_probs = self.stochastic_probs(
         aerial_logits_p,
-        batch['aerial']['center_ll'],
+        batch['aerial']['latlng'],
         logits,
         batch['latlng'],
         batch,
@@ -475,7 +479,7 @@ class GeoLocalizer(nn.Module):
       temperature = getattr(self, f'{name}_temperature')
 
       pred[f'{name}_cell_idx'] = best_cell_idx
-      pred[f'{name}_best_cell_idx'] = pred['sv_cell_idx']
+      pred[f'{name}_best_cell_idx'] = best_cell_idx
       pred[f'{name}_temperature'] = temperature[None].repeat(
           logits.shape[0], axis=0
       )
@@ -512,11 +516,13 @@ class GeoLocalizerModel(base.BaseModel):
     config.vit_aerial = config.vit.copy_and_resolve_references()
     config.vit_aerial.update(aerial_patch)
     self.config = config
+    self.s2cell_centers_ll = jnp.asarray(dataset_meta_data['cell_centers_ll'])
     self.flax_model = self.build_flax_model()
 
   def build_flax_model(self) -> nn.Module:
     return GeoLocalizer(
-        self.config, self.dtype, cell_centers=jnp.array([[]])
+        self.config, self.dtype,
+        cell_centers=self.s2cell_centers_ll,
     )
 
   def init_state(
