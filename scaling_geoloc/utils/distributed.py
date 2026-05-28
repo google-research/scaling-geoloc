@@ -30,6 +30,7 @@ import numpy as np
 from scenic.dataset_lib import dataset_utils
 from scenic.train_lib import train_utils
 import tqdm
+from scaling_geoloc.utils import geo
 from scaling_geoloc.utils import misc
 
 
@@ -595,7 +596,7 @@ def max_and_masked_expsum(
         batch_latlng, axis_name='batch', tiled=True  # Concat in axis 0.
     )  # ND*B x ... x 2
     latlng_on_device = global_latlng.reshape((jax.device_count(), -1, 2))
-    distances = misc.haversine_distance(  # ND*B x N//ND
+    distances = geo.haversine_distance(  # ND*B x N//ND
         jnp.expand_dims(all_latlng, axis=-2),
         latlng_on_device[jax.lax.axis_index('batch')][None],
     )[..., 0]
@@ -689,7 +690,7 @@ def max_and_masked_expsum_ring(
     # Apply distance filter.
     if distance_threshold is not None:
       shard_latlng = _latlng_for_shard(origin_device)
-      distances = misc.haversine_distance(
+      distances = geo.haversine_distance(
           batch_latlng[:, None, :], shard_latlng[None]
       )[..., 0]
       sim = jnp.where(distances > distance_threshold, sim, -jnp.inf)

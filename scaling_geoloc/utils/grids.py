@@ -27,6 +27,7 @@ import jax
 from jax.experimental import sparse as jax_sparse
 import jax.numpy as jnp
 import numpy as np
+from scaling_geoloc.utils import interpolate as interpolate_utils
 from scaling_geoloc.utils import misc
 
 Point = TypeAlias[FloatArray['... N']]
@@ -126,6 +127,7 @@ class Grid3D(GridND):
 
   def bev(self) -> Grid2D:
     return Grid2D(self.extent[:2], self.cell_size[..., :2])
+
 
 # Register Grids to jax for batchability.
 jax.tree_util.register_dataclass(
@@ -440,7 +442,7 @@ def interpolate_nd(
 
   # Wrapper to switch between interpolation functions.
   # Improves speed from PIX interpolation.
-  interp_function = misc.get_interpolate_function(
+  interp_function = interpolate_utils.get_interpolate_function(
       mode=mode, order=order, cval=cval
   )
   batched_interp_function = jax.vmap(

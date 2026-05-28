@@ -18,7 +18,7 @@
 import jax.numpy as jnp
 import numpy as np
 import s2
-from scaling_geoloc.scenic import types
+from scaling_geoloc import types
 from scaling_geoloc.utils import geo
 from etils.array_types import FloatArray, BoolArray
 

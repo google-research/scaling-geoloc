@@ -30,6 +30,8 @@ from scaling_geoloc.configs import defaults
 from scaling_geoloc.models import base
 from scaling_geoloc.models import vit
 from scaling_geoloc.utils import augmentations
+from scaling_geoloc.utils import image as image_utils
+from scaling_geoloc.utils import geo
 from scaling_geoloc.utils import misc, distributed
 
 
@@ -156,11 +158,11 @@ class GeoLocalizer(nn.Module):
     aerial_pixels = batch['aerial']['image']
 
     # Crop to multiple of patch size to avoid boundary effects.
-    image_pixels = misc.crop_to_multiple(
+    image_pixels = image_utils.crop_to_multiple(
         image_pixels,
         self.config.vit.get('patches', {}).get('size', [16])[0],
     )
-    aerial_pixels = misc.crop_to_multiple(
+    aerial_pixels = image_utils.crop_to_multiple(
         aerial_pixels,
         self.config.vit_aerial.get('patches', {}).get('size', [16])[0],
     )
@@ -224,7 +226,7 @@ class GeoLocalizer(nn.Module):
 
     # B x NB
     # same_cell = cell_idx[:, None] == all_cell_idx[None]
-    distance_meters = misc.haversine_distance(
+    distance_meters = geo.haversine_distance(
         source_latlngs[:, None], all_cell_centers_ll[None]
     )[..., 0]
     same_cell = distance_meters < self.config.same_cell_threshold
@@ -355,7 +357,7 @@ class GeoLocalizer(nn.Module):
               all_idx[..., None],
               axis=-2,
           )
-          query_p_dist = misc.haversine_distance(
+          query_p_dist = geo.haversine_distance(
               cell_centers,
               batch['latlng'][:, None],
           )[..., 0]
@@ -464,12 +466,12 @@ class GeoLocalizerModel(base.BaseModel):
       ).astype(jnp.float32)
 
     # Log distance metrics of best cell.
-    query_pred_p_dist = misc.haversine_distance(
+    query_pred_p_dist = geo.haversine_distance(
         self.s2cell_centers_ll[batch['cell_idx']],
         self.s2cell_centers_ll[pred['query_best_cell_idx']],
     )[..., 0]
 
-    metrics = metrics | misc.distance_metrics(query_pred_p_dist)
+    metrics = metrics | geo.distance_metrics(query_pred_p_dist)
     if 'query_aerial_p_multi_similarity' in self.config.compose_loss:
       ms_loss = misc.MultiSimilarityLoss(
           alpha=self.config.multi_similarity_alpha,

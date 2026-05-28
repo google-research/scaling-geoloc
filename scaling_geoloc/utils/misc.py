@@ -14,10 +14,10 @@
 
 """Various convenience functions."""
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 import functools
 from typing import Any, Callable
-import dm_pix
+
 from etils.array_types import Array
 from etils.array_types import BoolArray
 from etils.array_types import FloatArray
@@ -25,12 +25,10 @@ from etils.array_types import IntArray
 import flax
 import jax
 import jax.numpy as jnp
-import jaxcam
 import numpy as np
-import scipy
-from sklearn import decomposition
 
-from scaling_geoloc.utils import geometry
+from scaling_geoloc.utils import geo
+from scaling_geoloc.utils.image import crop_to_multiple
 
 
 def filter_dict(
@@ -65,18 +63,6 @@ def map_dict(
   )
 
 
-def sequence_to_image(
-    sequence: FloatArray['... HW C'],
-    img_height: int,
-    img_width: int,
-) -> FloatArray['... H W C']:
-  """Converts sequence dimension to height width."""
-  return jnp.reshape(
-      sequence,
-      sequence.shape[:-2] + (img_height, img_width) + (-1,),
-  )
-
-
 def filter_batch_for_jit(batch: dict[str, Any]) -> dict[str, Any]:
   """Exclude string and bytes arrays from a batch nested dictionary."""
 
@@ -104,34 +90,6 @@ def masked_bmean(x: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
   return jnp.sum(x * mask, axis=-1) / jnp.sum(mask, axis=-1).clip(min=1.0e-10)
 
 
-def crop_to_multiple(
-    images: Array['... H W N'], stride: int
-) -> Array['... H2 W2 N']:
-  """Crop a batch of images such as their size is a multiple of stride."""
-  h, w = images.shape[-3:-1]
-  ch = min((h // stride) * stride, h)
-  cw = min((w // stride) * stride, w)
-  return images[..., :ch, :cw, :]
-
-
-def resize_to_multiple(
-    images: Array['... H W N'],
-    stride: int,
-    method: str = 'bicubic',
-    antialias: bool = True,
-) -> Array['... H2 W2 N']:
-  """Resize a batch of images such as their size is a multiple of stride."""
-  h, w = images.shape[-3:-1]
-  ch = (h // stride + 1) * stride
-  cw = (w // stride + 1) * stride
-  return jax.image.resize(
-      images,
-      (images.shape[:-3], ch, cw, images.shape[-1]),
-      method=method,
-      antialias=antialias,
-  )
-
-
 def to_flat_batch(
     batch: Mapping[str, Any] | dict[str, Any], stride: int | None = None
 ) -> dict[str, jnp.ndarray]:
@@ -141,61 +99,6 @@ def to_flat_batch(
   if stride is not None:
     image = crop_to_multiple(image, stride) if image.ndim == 3 else image
   return batch | {'image': image}
-
-
-def token_mask(
-    rng: Any,
-    image_shape: tuple[int, ...],
-    patch_size: tuple[int, int],
-    mask_ratio: float,
-    mask_prob: float = 1.0,
-) -> BoolArray['... NH NW 1']:
-  """Generate a patch-mask for a batch of images."""
-  h, w = image_shape[-3:-1]
-  rng, prob_rng = jax.random.split(rng, 2)
-  nh, nw = h // patch_size[0], w // patch_size[1]
-  bs = image_shape[:-3]
-  do_mask = jax.random.uniform(prob_rng, shape=bs + (1, 1)) < mask_prob
-  is_mask = jax.random.uniform(rng, shape=bs + (nh * nw, 1)) < mask_ratio
-  return do_mask & is_mask
-
-
-def pad_to_multiple(
-    images: Array['B H W N'], stride: int, fill_value: int = 0
-) -> Array['B H2 W2 N']:
-  """Pad a batch of images such as their size is a multiple of stride."""
-  shape = images.shape[-3:-1]
-  pad = stride - np.array(shape) % stride
-  padded = jnp.pad(
-      images,
-      [(0, 0), (0, pad[0]), (0, pad[1]), (0, 0)],
-      constant_values=fill_value,
-  )
-  return padded
-
-
-def pad_like(
-    inp: FloatArray['... Hi Wi N'], target: FloatArray['... H W N']
-) -> FloatArray['... H W N']:
-  out = jnp.zeros_like(target)
-  out = out.at[..., : inp.shape[-3], : inp.shape[-2], :].set(inp)
-  return out
-
-
-def alpha_blend(
-    data_i: FloatArray['...'],
-    data_j: FloatArray['...'],
-    alpha: FloatArray['...'] | float,
-) -> FloatArray['...']:
-  """Alpha blends two data sources."""
-  return data_i * (1.0 - alpha) + data_j * alpha
-
-
-def to_grayscale(image: FloatArray['... H W C']) -> FloatArray['... H W 1']:
-  """Converts an RGB image to grayscale."""
-  return jnp.sum(
-      image * jnp.array([0.2989, 0.5870, 0.1140]), axis=-1, keepdims=True
-  ).repeat(axis=-1, repeats=3)
 
 
 # source: third_party/py/scenic/model_lib/base_models/box_utils.py
@@ -247,13 +150,6 @@ def l2_normalize(
     return jnp.where(denom_sq < tiny, jnp.zeros_like(normal), normal)
 
 
-def side_by_side(
-    images: Sequence[FloatArray['... H W 3']],
-) -> FloatArray['... H W 3']:
-  """Concatenates images side by side."""
-  return jnp.concatenate(images, axis=-3)
-
-
 def sample(
     arr: Array,
     max_num_samples: int,
@@ -268,128 +164,8 @@ def sample(
     return arr[rng.choice(arr.shape[axis], max_num_samples, replace=False), ...]
 
 
-def features_to_rgb(
-    features: FloatArray['... C'],
-    normalize: bool = True,
-    mask: BoolArray['...'] | None = None,
-    offset: int = 0,
-    renormalize: bool = True,
-) -> FloatArray['... 3']:
-  """Project a c-dimensional feature map to RGB colors using PCA."""
-  pca = decomposition.PCA(n_components=offset + 3)
-  features_flat = features.reshape([-1, features.shape[-1]])
-  if mask is not None:
-    features_fit = features[mask]
-  else:
-    features_fit = features_flat
-  if normalize:
-    features_fit = l2_normalize(features_fit)
-  features_pca = (
-      pca.fit(features_fit)
-      .transform(features_flat)
-      .reshape(features.shape[:-1] + (pca.n_components,))
-  )[..., -3:]
-
-  # Convert to range 0-1
-  if renormalize:
-    features_pca = l2_normalize(features_pca)
-    features_pca = (features_pca + 1) / 2
-  else:
-    features_pca = (features_pca - features_pca.min()) / (
-        jnp.ptp(features_pca) + jnp.finfo(jnp.float32).eps
-    )
-
-  return features_pca
-
-
-def float_to_byte(image: FloatArray['...']) -> FloatArray['...']:
-  """Converts a float image to a byte image."""
-  return (image * 255.0).clip(0.0, 255.0).astype(jnp.uint8)
-
-
-def byte_to_float(image: FloatArray['...']) -> FloatArray['...']:
-  """Converts a byte image to a float image."""
-  return image.astype(jnp.float32) / 255.0
-
-
-# Adapted from location/visualmapping/experimental/fomo/scenic/trainer.py
-def reshape_patches_to_image(
-    array: Array['... (NH*NW) PH PW C'] | Array['... NH NW PH PW C'],
-    num_rows: int,
-    num_cols: int,
-    image_like: bool = False,
-) -> Array['... H W C']:
-  """Reshapes an array of patched tokens into an image."""
-
-  orig_shape = array.shape[: (-5 if image_like else -4)]
-  patch_height, patch_width, input_channels = array.shape[-3:]
-  array = array.reshape(
-      *orig_shape,
-      num_rows,
-      num_cols,
-      patch_height,
-      patch_width,
-      input_channels,
-  )
-  array = array.swapaxes(-4, -3)
-  return array.reshape(
-      *orig_shape,
-      num_rows * patch_height,
-      num_cols * patch_width,
-      input_channels,
-  )
-
-
-def patchify(x: Array['... H W C'], ph: int, pw: int) -> Array['... L C']:
-  """Converts an image to a sequence of patches."""
-  return jax.lax.collapse(
-      reshape_image_to_patches(crop_to_multiple(x, ph), ph, pw),
-      -3,
-      -1,
-  )
-
-
 def to_homogeneous(x: Array['... C']) -> Array['... C+1']:
   return jnp.concatenate([x, jnp.ones_like(x[..., :1])], axis=-1)
-
-
-# Adapted from location/visualmapping/experimental/fomo/scenic/trainer.py
-def reshape_image_to_patches(
-    array: Array['... H W C'],
-    patch_height: int,
-    patch_width: int,
-    autopad: bool = False,
-    image_like: bool = False,
-) -> Array['... (NH*NW) PH PW C'] | Array['... NH NW PH PW C']:
-  """Reshapes an image into an array of patched tokens."""
-  orig_shape = array.shape[:-3]
-  array = jax.lax.collapse(array, 0, -3)
-  if autopad:
-    if patch_height != patch_width:
-      raise ValueError('Patch height and width must be equal for padding.')
-    array = pad_to_multiple(array, patch_height)
-  _, input_height, input_width, input_channels = array.shape
-  num_rows, num_cols = input_height // patch_height, input_width // patch_width
-  array = array.reshape(
-      *orig_shape,
-      num_rows,
-      patch_height,
-      num_cols,
-      patch_width,
-      input_channels,
-  )
-  array = array.swapaxes(-4, -3)
-
-  if image_like:
-    return array
-  else:
-    return array.reshape(
-        *orig_shape,
-        num_rows * num_cols,
-        patch_height,
-        patch_width,
-        input_channels,
-    )
 
 
 def cross_entropy(
@@ -398,124 +174,6 @@ def cross_entropy(
   target_probs = jax.nn.softmax(target_logits, axis=-1)
   log_source_probs = jax.nn.log_softmax(source_logits, axis=-1)
   return -(target_probs * log_source_probs).sum(axis=-1, keepdims=True)
-
-
-# Source: third_party/py/dm_pix/_src/augmentation.py
-def get_interpolate_function(
-    mode: str,
-    order: int,
-    cval: float = 0.0,
-    numpy: bool = False,
-) -> Callable[[FloatArray, FloatArray], FloatArray]:
-  """Selects the interpolation function to use based on the given parameters.
-
-  PIX interpolations are preferred given they are faster on accelerators. For
-  the cases where such interpolation is not implemented by PIX we really on
-  jax.scipy.ndimage.map_coordinates. See specifics below.
-
-  Args:
-    mode: the mode parameter determines how the input array is extended beyond
-      its boundaries. Modes 'nearest and 'constant' use PIX interpolation, which
-      is very fast on accelerators (especially on TPUs). For all other modes,
-      'wrap', 'mirror' and 'reflect', we rely on
-      `jax.scipy.ndimage.map_coordinates`, which however is slow on
-      accelerators, so use it with care.
-    order: the order of the spline interpolation. The order has to be in the
-      range [0, 1]. Note that PIX interpolation will only be used for order=1,
-      for other values we use `jax.scipy.ndimage.map_coordinates`.
-    cval: value to fill past edges of input if mode is 'constant'.
-    numpy: If true, return a numpy interpolationfunction.
-
-  Returns:
-    The selected interpolation function.
-  """
-  if numpy:
-    interpolate_function = functools.partial(
-        scipy.ndimage.map_coordinates, mode=mode, order=order, cval=cval
-    )
-  else:
-    if mode == 'nearest' and order == 1:
-      interpolate_function = dm_pix.flat_nd_linear_interpolate
-    elif mode == 'constant' and order == 1:
-      interpolate_function = functools.partial(
-          dm_pix.flat_nd_linear_interpolate_constant, cval=cval
-      )
-    else:
-      interpolate_function = functools.partial(
-          jax.scipy.ndimage.map_coordinates, mode=mode, order=order, cval=cval
-      )
-  return interpolate_function
-
-
-def grid_indices(
-    h: int, w: int, batch_dims: tuple[int, ...] | None = None
-) -> IntArray['*b h w 2']:
-  xy = jnp.stack(
-      jnp.meshgrid(jnp.arange(0, w), jnp.arange(0, h), indexing='xy'), axis=-1
-  )
-  if batch_dims is not None:
-    xy = jnp.expand_dims(xy, axis=range(len(batch_dims)))
-    xy = jnp.tile(xy, batch_dims + (1, 1, 1))
-  return xy
-
-
-def indices_to_coords(indices: IntArray) -> FloatArray:
-  return indices + 0.5
-
-
-def coords_to_indices(coords: FloatArray) -> IntArray:
-  return np.rint(coords - 0.5).astype(np.int32)
-
-
-def resize_image_like(
-    data: Mapping[str, Any],
-    resize_factor: float = 2.0,
-    antialias: bool = True,
-) -> Mapping[str, Any]:
-  """Resize all image-like entries by a factor."""
-  for scene in ['query', 'map']:
-    if scene not in data:
-      continue
-    image = data[scene]['image']
-    batch_dims = image.shape[:-3]
-    h, w = image.shape[-3:-1]
-    hr, wr = int(h * resize_factor), int(w * resize_factor)
-
-    for k, v in data[scene].items():
-      if not isinstance(v, (np.ndarray, jnp.ndarray)):
-        continue
-      if v.shape[:-1] == image.shape[:-1]:
-        data[scene][k] = jax.image.resize(
-            v,
-            shape=batch_dims + (hr, wr, v.shape[-1]),
-            method=('bilinear' if k == 'image' else 'nearest'),
-            antialias=antialias,
-        )
-  return data
-
-
-def image_resize_host(
-    image: FloatArray['... H W C'],
-    shape: tuple[int, ...],
-    method: str,
-    antialias: bool = True,
-    jit: bool = False,
-) -> FloatArray['... H W C']:
-  """Resize image to a certain shape on host. Disable jit by default."""
-  # Even though we manually transfer, there are still some hidden transfers...
-  host = jax.devices('cpu')[0]
-  with jax.disable_jit(disable=not jit):
-    image = jax.device_put(image, host)
-    with jax.default_device(host):
-      with jax.transfer_guard('allow'):
-        return jax.device_get(
-            jax.image.resize(
-                image,
-                shape=shape,
-                method=method,
-                antialias=antialias,
-            )
-        )
 
 
 def shuffle_and_partition(
@@ -558,67 +216,6 @@ def batch_sample_indices(
 
   keys = jax.random.split(rng, probs.shape[0])
   return jax.vmap(functools.partial(sample_indices))(keys, probs)
-
-
-def distort_image_coordinates(
-    xy: FloatArray['H W 2'],
-    camera: jaxcam.Camera,
-) -> tuple[FloatArray['H W 2'], jaxcam.Camera]:
-  """Distort image coordinates and return the pinhole camera."""
-  assert not camera.use_inverted_distortion
-  distorted_camera = camera.replace(  # pytype: disable=attribute-error
-      position=jnp.zeros_like(camera.position),
-      orientation=jnp.eye(3),
-  )
-  pinhole_camera = distorted_camera.replace(  # pytype: disable=attribute-error
-      radial_distortion=None,
-      tangential_distortion=None,
-      projection_type='perspective',
-  )
-  uv = jaxcam.pixels_to_local_rays(pinhole_camera, xy)
-  xy_distorted = jaxcam.project(distorted_camera, uv)[..., :2]
-  return xy_distorted, pinhole_camera.replace(
-      position=camera.position, orientation=camera.orientation
-  )
-
-
-def interpolate_image(
-    image: FloatArray['H W C'],
-    coords: FloatArray['H W 2'],
-    order: int = 1,  # 0 for nearest, 1 for linear
-    cval: float = 0.0,
-    mode: str = 'constant',
-    numpy: bool = False,
-) -> FloatArray['H W C']:
-  """Interpolates an image at given coordinates."""
-  interp_function = get_interpolate_function(mode, order, cval, numpy)
-  if numpy:
-    image = np.array(image)
-    coords = np.array(coords)
-    return np.stack(
-        [
-            interp_function(layer, np.moveaxis(coords, -1, 0))
-            for layer in np.permute_dims(image, (2, 0, 1))
-        ],
-        axis=-1,
-    )
-  else:
-    return jax.vmap(interp_function, in_axes=(-1, None), out_axes=-1)(
-        image, jnp.moveaxis(coords, -1, 0)
-    )
-
-
-def undistort_image(
-    image: FloatArray['H W C'],
-    camera: jaxcam.Camera,
-    **interp_kwargs,
-) -> tuple[FloatArray['H W C'], jaxcam.Camera]:
-  """Convenience function to undistort an image."""
-  h, w = image.shape[-3:-1]
-  xy = grid_indices(h, w) + 0.5
-  xy_d, pinhole_camera = distort_image_coordinates(xy, camera)
-  ij_d = jnp.flip(xy_d, -1)
-  return interpolate_image(image, ij_d - 0.5, **interp_kwargs), pinhole_camera
 
 
 def compute_similarity(
@@ -820,130 +417,6 @@ class CosFace:
     )
 
 
-def draw_image_border(
-    image: FloatArray['... H W C'],
-    border_color: FloatArray['... 3'],
-    border_width: int = 1,
-) -> FloatArray['... H W C']:
-  """Draws a border around points in an image."""
-  h, w = image.shape[-3:-1]
-  coords = grid_indices(h, w, image.shape[:-3])
-  border_mask = (
-      (coords < border_width).any(-1)
-      | (coords[..., 0] >= w - border_width)
-      | (coords[..., 1] >= h - border_width)
-  )[..., None]
-  return jnp.where(border_mask, border_color, image)
-
-
-def label_image_border(
-    image: FloatArray['... H W C'],
-    labels: IntArray['...'],
-    colors_per_label: FloatArray['NL 3'],
-    border_width: int = 1,
-) -> FloatArray['H W C']:
-  """Labels an image with a border."""
-  for label, label_color in enumerate(colors_per_label):
-    image = jnp.where(
-        labels[..., None, None, None] == label,
-        draw_image_border(
-            image,
-            label_color,
-            border_width=border_width,
-        ),
-        image,
-    )
-  return image
-
-
-def spherical_project(
-    direction: FloatArray['3'], f_horizontal: float, f_vertical: float
-) -> FloatArray['2']:
-  """Projects a 3D direction into pixel coordinates of a spherical image."""
-  unit_ray = direction / jnp.linalg.norm(direction).clip(min=1.0e-6)
-  w_r_cam = jnp.array([[0, 0, 1], [1, 0, 0], [0, -1, 0]])
-  unit_ray = (unit_ray[None] @ w_r_cam.T)[0]
-  phi = jnp.acos(unit_ray[2])
-  y = phi * f_vertical
-  theta = jnp.arctan2(unit_ray[1], unit_ray[0]) + jnp.pi
-  x = theta * f_horizontal
-  return jnp.stack([x, y])
-
-
-def deg2rad(deg: float) -> float:
-  return deg / 180 * jnp.pi
-
-
-def rotation_from_rpy(
-    roll: float, pitch: float, yaw: float, degree: bool = False
-) -> FloatArray['3 3']:
-  """Creates a rotation matrix from roll, pitch, yaw."""
-  if degree:
-    roll = deg2rad(roll)
-    pitch = deg2rad(pitch)
-    yaw = deg2rad(yaw)
-  rot_x = jnp.zeros((3, 3))
-  rot_x = rot_x.at[0, 0].set(1)
-  rot_x = rot_x.at[1, 1].set(jnp.cos(pitch))
-  rot_x = rot_x.at[1, 2].set(jnp.sin(pitch))
-  rot_x = rot_x.at[2, 1].set(-jnp.sin(pitch))
-  rot_x = rot_x.at[2, 2].set(jnp.cos(pitch))
-
-  rot_y = jnp.zeros((3, 3))
-  rot_y = rot_y.at[0, 0].set(jnp.cos(yaw))
-  rot_y = rot_y.at[0, 2].set(-jnp.sin(yaw))
-  rot_y = rot_y.at[1, 1].set(1)
-  rot_y = rot_y.at[2, 0].set(jnp.sin(yaw))
-  rot_y = rot_y.at[2, 2].set(jnp.cos(yaw))
-
-  rot_z = jnp.zeros((3, 3))
-  rot_z = rot_z.at[0, 0].set(jnp.cos(roll))
-  rot_z = rot_z.at[0, 1].set(jnp.sin(roll))
-  rot_z = rot_z.at[1, 0].set(-jnp.sin(roll))
-  rot_z = rot_z.at[1, 1].set(jnp.cos(roll))
-  rot_z = rot_z.at[2, 2].set(1)
-  return rot_z @ rot_x @ rot_y
-
-
-def camera_from_rpyf(
-    height: int, width: int, roll: float, pitch: float, yaw: float, hfov: float
-) -> jaxcam.Camera:
-  """Creates a camera from roll, pitch, yaw, hfov, height, width."""
-  cam_r_identity = rotation_from_rpy(roll, pitch, yaw, degree=True)
-  focal_length = width / 2 / jnp.tan(deg2rad(hfov / 2))
-  principal_point = jnp.array([width / 2, height / 2]) + 0.5
-  image_size = jnp.array([width, height])
-  return jaxcam.Camera.create(
-      orientation=cam_r_identity,
-      position=jnp.zeros(3),
-      focal_length=focal_length,
-      principal_point=principal_point,
-      image_size=image_size,
-      is_fisheye=False,
-      radial_distortion=np.zeros(3),
-      tangential_distortion=np.zeros(2),
-  )
-
-
-def img_from_pano(
-    pano_img: FloatArray['H W 3'], cam: jaxcam.Camera, **interp_kwargs
-) -> FloatArray['Hi Wi 3']:
-  """Extracts pixels of a camera from a pano."""
-  w, h = cam.image_size
-  xy = grid_indices(h, w) + 0.5
-  rays = jaxcam.pixels_to_rays(cam, xy)
-  ph, pw = pano_img.shape[:2]
-  f_v = ph / jnp.pi
-  f_h = pw / (2 * jnp.pi)
-  pano_xy = jax.vmap(
-      jax.vmap(
-          functools.partial(spherical_project, f_horizontal=f_h, f_vertical=f_v)
-      )
-  )(rays)
-  pano_ij = jnp.flip(pano_xy, -1)
-  return interpolate_image(pano_img, pano_ij - 0.5, **interp_kwargs)
-
-
 def find_topk(
     qy: FloatArray['Q D'],
     db: FloatArray['DB D'],
@@ -961,7 +434,7 @@ def find_topk(
         'cosine_similarity': lambda x, y: (
             compute_similarity(x, y, normalize=True)[..., 0]
         ),
-        'haversine': lambda x, y: haversine_distance(x, y)[..., 0],
+        'haversine': lambda x, y: geo.haversine_distance(x, y)[..., 0],
         'euclidean': lambda x, y: jnp.linalg.norm(x - y, axis=-1),
     }
     similarity_fn = similarity_fns[similarity_fn]
@@ -1042,127 +515,6 @@ def log_optimal_transport(
   return log_probs - norm
 
 
-def haversine_distance(
-    p1_deg: FloatArray['... 2'],
-    p2_deg: FloatArray['... 2'],
-    numpy: bool = False,
-) -> FloatArray['... 1']:
-  """Computes the haversine distance between two points (in meters)."""
-  xnp = np if numpy else jnp
-  d_lat = xnp.radians(p2_deg[..., 0] - p1_deg[..., 0])
-  d_lng = xnp.radians(p2_deg[..., 1] - p1_deg[..., 1])
-  a = (
-      xnp.sin(d_lat / 2) ** 2
-      + xnp.cos(xnp.radians(p1_deg[..., 0]))
-      * xnp.cos(xnp.radians(p2_deg[..., 0]))
-      * xnp.sin(d_lng / 2) ** 2
-  )
-  c = 2 * xnp.atan2(xnp.sqrt(a), xnp.sqrt(1 - a))
-  return c[..., None] * 6371 * 1000
-
-
-def distance_metrics(
-    distance_to_gt: FloatArray['B'], prefix: str = ''
-) -> dict[str, Any]:
-  """Computes distance metrics."""
-  thresholds = [
-      50,
-      100,
-      200,
-      500,
-      1_000,
-      2_000,
-      5_000,
-      10_000,
-      25_000,
-      50_000,
-      100_000,
-      200_000,
-      500_000,
-      750_000,
-      1_000_000,
-  ]
-  key_to_threshold = {
-      f'{prefix}within_{t if t < 1000 else t // 1000}{"m" if t < 1000 else "km"}': (
-          t
-      )
-      for t in thresholds
-  }
-  metrics = {f'{prefix}distance_to_gt': distance_to_gt}
-  for key, threshold in key_to_threshold.items():
-    metrics[key] = (distance_to_gt < threshold).astype(jnp.float32)
-  return metrics
-
-
-def distances_to_weights(
-    scaled_distances: FloatArray['... N'],
-    clip_min: float | None = None,
-) -> FloatArray['... N']:
-  """Converts distances to inverse weights (large distance -> small weight)."""
-  haversine_weights = jnp.exp(-scaled_distances)
-  if clip_min:
-    haversine_weights = jnp.where(
-        haversine_weights > clip_min, haversine_weights, 0.0
-    )
-  return haversine_weights
-
-
-def crop_aerial_image(
-    image: FloatArray['H W 3'],  # (x, y, c)
-    resolution_meters_source: float,  # meters / pixel
-    height_width: tuple[int, int],  # (height, width)
-    dy_dx: FloatArray['2'],  # from center, (dy, dx)
-    rotation_angle_degrees: float,  # degrees
-    resolution_meters_crop: float,  # meters / pixel
-    scale_offset_by_extent: bool = True,
-    numpy: bool = False,
-    order: int = 1,
-    make_upright: bool = True,
-) -> tuple[FloatArray['4 4'], FloatArray['H W 3'], FloatArray['H W 1']]:
-  """Samples a crop from an aerial image."""
-  xnp = np if numpy else jnp
-  if scale_offset_by_extent:
-    offset_meters = (
-        dy_dx * xnp.array(image.shape[:-1]) * resolution_meters_source
-    )
-  else:
-    offset_meters = dy_dx
-  center_source = resolution_meters_source * xnp.array(image.shape[:-1]) / 2
-  center_crop = resolution_meters_crop * xnp.array(height_width[::-1]) / 2
-  grid_crop = grid_indices(*height_width) * resolution_meters_crop
-  grid_crop = xnp.flip(grid_crop, -1)
-  source_t2d_crop = (
-      geometry.Transform2D.from_radians(angle=0, t=center_source)
-      @ geometry.Transform2D.from_radians(
-          angle=xnp.deg2rad(rotation_angle_degrees), t=offset_meters
-      )
-      @ geometry.Transform2D.from_radians(angle=0, t=-center_crop)
-  )
-  grid_transformed = (
-      source_t2d_crop.transform(grid_crop)
-  ) / resolution_meters_source
-  valid = (grid_transformed >= 0.0).all(-1) & (
-      grid_transformed < xnp.array(image.shape[:-1])[None, None]
-  ).all(-1)
-  if not numpy:
-    image = byte_to_float(image)
-  image_crop = interpolate_image(
-      image, grid_transformed + 0.5, order=order, numpy=numpy
-  )
-  if not numpy:
-    image_crop = float_to_byte(image_crop)
-  source_t_crop = xnp.eye(4)
-  if make_upright:
-    image_crop = xnp.swapaxes(image_crop, 0, 1)[::-1]
-  if numpy:
-    source_t_crop[:2, :2] = source_t2d_crop.R
-    source_t_crop[:2, -1] = source_t2d_crop.t
-  else:
-    source_t_crop = source_t_crop.at[:2, :2].set(source_t2d_crop.R)
-    source_t_crop = source_t_crop.at[:2, -1].set(source_t2d_crop.t)
-  return source_t_crop, image_crop, valid[..., None]
-
-
 def l2_normalize_per_head(
     x: FloatArray['... D'],
     num_heads: int,
@@ -1215,68 +567,3 @@ def weighted_softmax(
   return exps * weights / (exps * weights).sum(axis, keepdims=True)
 
 
-def ecef_to_latlngalt(
-    ecef_coords: FloatArray['... 3'],
-    max_iter: int = 2,
-    tolerance: float | None = None,
-) -> FloatArray['... 3']:
-  """ECEF to LatLngAlt in Jax.
-
-  Converts Earth-Centered, Earth-Fixed (ECEF) coordinates (x, y, z) in meters
-  to Latitude (degrees), Longitude (degrees), and Altitude (meters) using
-  Bowring's iterative method in JAX for improved latitude accuracy.
-
-  Args:
-      ecef_coords: A JAX NumPy array of shape (3,) or (n, 3) representing ECEF
-        coordinates [x, y, z].
-      max_iter: Maximum number of iterations for the latitude and altitude
-        refinement.
-      tolerance: Tolerance for the convergence of latitude and altitude.
-
-  Returns:
-      A JAX NumPy array of shape (3,) or (n, 3) representing
-      [latitude (degrees), longitude (degrees), altitude (meters)].
-  """
-  x = ecef_coords[..., 0]
-  y = ecef_coords[..., 1]
-  z = ecef_coords[..., 2]
-
-  # WGS 84 ellipsoid parameters
-  a = 6378137.0  # Semi-major axis (meters)
-  b = 6356752.314245179  # Semi-minor axis (meters)
-  e_sq = 1 - (b / a) ** 2  # First eccentricity squared
-
-  p = jnp.sqrt(x**2 + y**2)
-  lon_rad = jnp.arctan2(y, x)
-
-  # Initial guess for latitude (geocentric latitude)
-  lat_rad = jnp.arctan2(z, p * jnp.sqrt(1 - e_sq))
-  alt = jnp.zeros_like(lat_rad)
-
-  for _ in range(max_iter):
-    sin_lat = jnp.sin(lat_rad)
-    # Radius of curvature in the prime vertical
-    n = a / jnp.sqrt(1 - e_sq * sin_lat**2)
-    h_prev = alt
-    alt = p / jnp.cos(lat_rad) - n
-    lat_rad_prev = lat_rad
-    # Bowring's formula
-    lat_rad = jnp.arctan2(z / (p * (1 - e_sq * n / (n + alt))), 1)
-    if tolerance is not None:
-      if jnp.all(jnp.abs(lat_rad - lat_rad_prev) < tolerance) and jnp.all(
-          jnp.abs(alt - h_prev) < tolerance
-      ):
-        break
-
-  lat_deg = jnp.degrees(lat_rad)
-  lon_deg = jnp.degrees(lon_rad)
-
-  return jnp.stack([lat_deg, lon_deg, alt], axis=-1)
-
-
-def transform_points(
-    y_t_x: FloatArray['4 4'],
-    x_points: FloatArray['N 3'],
-) -> FloatArray['N 3']:
-  """3D transform points from coordinate system x to y."""
-  return x_points @ y_t_x[:3, :3].T + y_t_x[:3, -1]

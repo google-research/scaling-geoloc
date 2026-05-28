@@ -445,6 +445,7 @@ def geo_localizer() -> ml_collections.ConfigDict:
   config.detach_query_prototypes = False
   config.detach_aerial_prototypes = False
   config.masked_expsum = None
+  config.masked_expsum_ring = False
   config.filter_by_distance = False
   config.same_cell_threshold = 200.0
   # multi-similarity loss hyperparameters
