@@ -22,6 +22,7 @@ import grain.python as grain
 import numpy as np
 
 from scaling_geoloc import types
+from scaling_geoloc.utils import image as image_utils
 from scaling_geoloc.utils import misc
 
 
@@ -52,8 +53,8 @@ class NormalizePixels(grain.MapTransform):
 
   def map(self, data: types.DataDict) -> types.DataDict:
     return misc.map_dict(
-        lambda k, v: misc.byte_to_float(v)
-        if ('image_pixels' in k or 'rgb' in k) and v.dtype == np.uint8
+        lambda k, v: image_utils.byte_to_float(v)
+        if 'image' in k and v.dtype == np.uint8
         else v,
         data,
     )
@@ -78,7 +79,7 @@ class ResizeImageLike(grain.MapTransform):
         if not isinstance(v, np.ndarray) or np.ndim(v) != 3:
           continue
         if v.shape[:2] == (h, w):
-          data[scene][k] = misc.image_resize_host(
+          data[scene][k] = image_utils.image_resize_host(
               v,
               shape=(target_h, target_w, v.shape[-1]),
               method='bilinear' if 'image' in k else 'nearest',
@@ -119,7 +120,7 @@ class CenterCropImageLike(grain.MapTransform):
                 :,
             ]
           else:
-            data[scene][k] = misc.image_resize_host(
+            data[scene][k] = image_utils.image_resize_host(
                 v,
                 shape=(
                     self.crop_size[1],
@@ -157,7 +158,7 @@ class ResizeAndPadImageLike(grain.MapTransform):
       new_w = int(w * target_size / h)
 
     method = 'bilinear' if 'image' in k else 'nearest'
-    resized_v = misc.image_resize_host(
+    resized_v = image_utils.image_resize_host(
         v,
         shape=(new_h, new_w, v.shape[-1]),
         method=method,

@@ -25,10 +25,11 @@ from etils.array_types import IntArray
 import grain.python as grain
 import jax
 import ml_collections
+import numpy as np
 import tensorflow_datasets as tfds
 
-from scaling_geoloc.data import combined_data_source
 from scaling_geoloc.data import indexed_data_source
+from scaling_geoloc.data import joined_data_source
 from scaling_geoloc import types
 from scaling_geoloc.data import transforms as dtr
 from scaling_geoloc.data import samplers
@@ -45,9 +46,8 @@ def transformations_from_config(
       dtr.MaybeCollate(),
       dtr.NormalizePixels(),
   ]
-  transformations.append(
-      dtr.FilterInvalidCells()
-  )
+  if data_config.filter_invalid_cells:
+    transformations.append(dtr.FilterInvalidCells())
   return transformations, meta_data
 
 
@@ -189,16 +189,27 @@ def create_dataset(
   def build_data_source(
       split: str,
   ) -> grain.RandomAccessDataSource:
-    # Dataset composer.
-    dataset_path = os.path.join(
-        dataset_config.data_dir,
-        dataset_config.dirname,
-    )
-    data_source = tfds.builder_from_directory(dataset_path).as_data_source()[split]
-    data_source = combined_data_source.CombinedDataSource([data_source])
-    # Add dataset index to batch.
-    data_source = indexed_data_source.IndexedDataSource(data_source)
-    return data_source
+    location_dir = os.path.join(dataset_config.data_dir, dataset_config.location)
+    index_dir = os.path.join(location_dir, dataset_config.index_subdir)
+    query_source = tfds.builder_from_directory(
+        os.path.join(location_dir, 'query')
+    ).as_data_source(split)
+    aerial_source = tfds.builder_from_directory(
+        os.path.join(location_dir, 'aerial')
+    ).as_data_source(split)
+    query_index = tfds.builder_from_directory(
+        os.path.join(index_dir, 'query')
+    ).as_data_source(split)
+    aerial_index = tfds.builder_from_directory(
+        os.path.join(index_dir, 'aerial')
+    ).as_data_source(split)
+    source = joined_data_source.JoinedDataSource([
+        (query_source, 'query'),
+        (aerial_source, 'aerial'),
+        (query_index, None),
+        (aerial_index, None),
+    ])
+    return indexed_data_source.IndexedDataSource(source)
 
   train_data_source = build_data_source(
       dataset_config.train_split,
@@ -215,10 +226,20 @@ def create_dataset(
       seed=999,
   )
 
+  meta_path = os.path.join(
+      dataset_config.data_dir,
+      dataset_config.location,
+      dataset_config.index_subdir,
+      'metadata.npz',
+  )
+  with np.load(meta_path) as f:
+    cell_centers_ll = f['cell_centers_latlng']
+
   meta_data = {
       'num_train_examples': len(train_data_source),
       'num_valid_examples': len(valid_data_source),
       'dummy_batch_fn': dummy_batch_fn,
+      'cell_centers_ll': cell_centers_ll,
       **(meta_data if meta_data is not None else {}),
   }
 
