@@ -18,7 +18,6 @@ from typing import Any, Final
 
 from etils.array_types import FloatArray
 import jax.numpy as jnp
-import jaxcam
 import numpy as np
 import pyproj
 
@@ -36,14 +35,6 @@ ecef_transformer_latlng: Final[pyproj.Transformer] = (
         always_xy=True,
     )
 )
-
-
-def transform_points(
-    y_t_x: FloatArray['4 4'],
-    x_points: FloatArray['N 3'],
-) -> FloatArray['N 3']:
-  """3D transform points from coordinate system x to y."""
-  return x_points @ y_t_x[:3, :3].T + y_t_x[:3, -1]
 
 
 def np_normalize(x: np.ndarray, axis: int) -> np.ndarray:
@@ -233,61 +224,6 @@ def bilinear_interpolation_weights(
   if valid is not None:
     weights = (weights * valid) / weights[valid].sum().clip(min=1.0e-6)
   return weights
-
-
-def deg2rad(deg: float) -> float:
-  return deg / 180 * jnp.pi
-
-
-def rotation_from_rpy(
-    roll: float, pitch: float, yaw: float, degree: bool = False
-) -> FloatArray['3 3']:
-  """Creates a rotation matrix from roll, pitch, yaw."""
-  if degree:
-    roll = deg2rad(roll)
-    pitch = deg2rad(pitch)
-    yaw = deg2rad(yaw)
-  rot_x = jnp.zeros((3, 3))
-  rot_x = rot_x.at[0, 0].set(1)
-  rot_x = rot_x.at[1, 1].set(jnp.cos(pitch))
-  rot_x = rot_x.at[1, 2].set(jnp.sin(pitch))
-  rot_x = rot_x.at[2, 1].set(-jnp.sin(pitch))
-  rot_x = rot_x.at[2, 2].set(jnp.cos(pitch))
-
-  rot_y = jnp.zeros((3, 3))
-  rot_y = rot_y.at[0, 0].set(jnp.cos(yaw))
-  rot_y = rot_y.at[0, 2].set(-jnp.sin(yaw))
-  rot_y = rot_y.at[1, 1].set(1)
-  rot_y = rot_y.at[2, 0].set(jnp.sin(yaw))
-  rot_y = rot_y.at[2, 2].set(jnp.cos(yaw))
-
-  rot_z = jnp.zeros((3, 3))
-  rot_z = rot_z.at[0, 0].set(jnp.cos(roll))
-  rot_z = rot_z.at[0, 1].set(jnp.sin(roll))
-  rot_z = rot_z.at[1, 0].set(-jnp.sin(roll))
-  rot_z = rot_z.at[1, 1].set(jnp.cos(roll))
-  rot_z = rot_z.at[2, 2].set(1)
-  return rot_z @ rot_x @ rot_y
-
-
-def camera_from_rpyf(
-    height: int, width: int, roll: float, pitch: float, yaw: float, hfov: float
-) -> jaxcam.Camera:
-  """Creates a camera from roll, pitch, yaw, hfov, height, width."""
-  cam_r_identity = rotation_from_rpy(roll, pitch, yaw, degree=True)
-  focal_length = width / 2 / jnp.tan(deg2rad(hfov / 2))
-  principal_point = jnp.array([width / 2, height / 2]) + 0.5
-  image_size = jnp.array([width, height])
-  return jaxcam.Camera.create(
-      orientation=cam_r_identity,
-      position=jnp.zeros(3),
-      focal_length=focal_length,
-      principal_point=principal_point,
-      image_size=image_size,
-      is_fisheye=False,
-      radial_distortion=np.zeros(3),
-      tangential_distortion=np.zeros(2),
-  )
 
 
 def haversine_distance(
