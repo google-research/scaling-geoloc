@@ -523,8 +523,8 @@ class ViTBackbone(nn.Module):
       pooling: None | str = None,
       sow_attention: bool = False,
       extra_tokens: jt.Float[jt.Array, 'B M C'] | None = None,
-      normalize: bool = False,  # logits
-      normalize_per_head: bool = False,  # logits
+      normalize: bool = False,  # embeddings
+      normalize_per_head: bool = False,  # embeddings
   ) -> tuple[jt.Float[jt.Array, 'B L D'], jt.Float[jt.Array, 'B D']]:
 
     if not pooling:
@@ -601,8 +601,8 @@ class ViTBackbone(nn.Module):
       pooling: None | str = None,
       sow_attention: bool = False,
       extra_tokens: jt.Float[jt.Array, '... M C'] | None = None,
-      normalize: bool = False,  # logits
-      normalize_per_head: bool = False,  # logits
+      normalize: bool = False,  # embeddings
+      normalize_per_head: bool = False,  # embeddings
   ) -> tuple[jt.Float[jt.Array, '... L D'], jt.Float[jt.Array, '... D']]:
     x_flat = jax.lax.collapse(x, 0, -3)
     if mask is not None:
@@ -613,7 +613,7 @@ class ViTBackbone(nn.Module):
 
     if extra_tokens is not None:
       extra_tokens = jax.lax.collapse(extra_tokens, 0, -2)
-    logits_flat, backbone_output_flat = self(
+    emb_flat, backbone_output_flat = self(
         x_flat,
         train=train,
         mask=mask,
@@ -626,7 +626,7 @@ class ViTBackbone(nn.Module):
         normalize_per_head=normalize_per_head,
     )
 
-    logits = logits_flat.reshape(x.shape[:-3] + logits_flat.shape[1:])
+    emb = emb_flat.reshape(x.shape[:-3] + emb_flat.shape[1:])
     backbone_output = backbone_output_flat.reshape(
         x.shape[:-3] + backbone_output_flat.shape[1:]
     )
@@ -636,18 +636,18 @@ class ViTBackbone(nn.Module):
       flat_tokens = backbone_output.reshape(
           x.shape[:1] + (-1, backbone_output_flat.shape[-1])
       )
-      logits = heads.SpatialSoftmax(
+      emb = heads.SpatialSoftmax(
           channels=self.head_output_dim,
           name='output_projection',
       )(flat_tokens)
       if x.ndim == 5:
         # Add a dimension for the number of multi-view images.
-        logits = logits[..., None, :].repeat(x.shape[1], axis=-2)
+        emb = emb[..., None, :].repeat(x.shape[1], axis=-2)
       elif x.ndim > 5:
         raise ValueError(f'Unsupported number of dimensions: {x.ndim}')
       if normalize:
-        logits = misc.l2_normalize(logits)
-    return logits, backbone_output
+        emb = misc.l2_normalize(emb)
+    return emb, backbone_output
 
   @nn.compact
   def encode_masked(
@@ -661,8 +661,8 @@ class ViTBackbone(nn.Module):
       pooling: None | str = None,
       sow_attention: bool = False,
       extra_tokens: jt.Float[jt.Array, '... M C'] | None = None,
-      normalize: bool = False,  # logits
-      normalize_per_head: bool = False,  # logits
+      normalize: bool = False,  # embeddings
+      normalize_per_head: bool = False,  # embeddings
   ) -> tuple[
       jt.Float[jt.Array, '... D'],
       jt.Float[jt.Array, '... L+1 D'],
@@ -688,7 +688,7 @@ class ViTBackbone(nn.Module):
     if extra_tokens is not None:
       extra_tokens = jax.lax.collapse(extra_tokens, 0, -2)
 
-    logits, x = self(
+    emb, x = self(
         x_flat,
         train=train,
         mask=to_encode,
@@ -704,7 +704,7 @@ class ViTBackbone(nn.Module):
     assert self.head != 'fervers'
 
     if mask_mode == 'ignore':
-      ret = (logits, x, to_encode)
+      ret = (emb, x, to_encode)
     elif mask_mode == 'pad_token':
       is_masked = ~misc.indices_to_mask(to_encode, num_tokens)
       x_cls, x_patch = x[..., :1, :], x[..., 1:, :]
@@ -723,14 +723,14 @@ class ViTBackbone(nn.Module):
           jax.lax.collapse(x_patch, 0, -2)
       )
       x_unrolled = jnp.concatenate([x_cls, x_unrolled], axis=-2)
-      ret = (logits, x_unrolled, is_masked[..., None])
+      ret = (emb, x_unrolled, is_masked[..., None])
     else:
       raise ValueError(f'Unknown mask mode {mask_mode}')
     out = [x.reshape(*bs, *x.shape[1:]) for x in ret]
     return tuple(out)
 
   def output_dim(self) -> int:
-    """Returns the output dimension of the logits."""
+    """Returns the output dimension of the embeddings."""
     if self.head_output_dim:
       return self.head_output_dim
     else:

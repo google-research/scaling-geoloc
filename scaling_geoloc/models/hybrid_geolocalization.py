@@ -16,7 +16,7 @@
 
 from typing import Any, Mapping, Sequence
 
-from etils.array_types import FloatArray, IntArray
+from etils.array_types import FloatArray
 import flax.linen as nn
 import jax
 import numpy as np
@@ -102,19 +102,19 @@ class GeoLocalizer(nn.Module):
 
   def compute_similarity_to_prototypes(
       self,
-      logits: FloatArray['B ... D'],
+      emb: FloatArray['B ... D'],
       prototypes: FloatArray['... N|N//ND D'],
       normalize: bool = False,
   ) -> FloatArray['B N']:
     """Computes similarity to cell codes."""
-    logits = jnp.expand_dims(logits, axis=-2)
+    emb = jnp.expand_dims(emb, axis=-2)
     prototypes = prototypes[None]
     if self.config.shard_prototypes and not self.is_initializing():
       # @TODO: Probably only need this one.
-      return distributed.sharded_similarity(logits, prototypes, normalize=normalize)
+      return distributed.sharded_similarity(emb, prototypes, normalize=normalize)
     else:
       return misc.compute_similarity(
-          logits,
+          emb,
           prototypes,
           normalize=normalize,
       )[..., 0]
@@ -128,10 +128,10 @@ class GeoLocalizer(nn.Module):
     """Interface to backbone encoder."""
     kwargs['normalize'] = self.config.l2_normalize
     kwargs['normalize_per_head'] = self.config.l2_normalize_per_head
-    logits, tokens = self.backbone.encode_multiview(
+    emb, tokens = self.backbone.encode_multiview(
         batch['image'], *args, **kwargs
     )
-    return logits, tokens
+    return emb, tokens
 
   @nn.compact
   def encode_aerial(
@@ -144,10 +144,10 @@ class GeoLocalizer(nn.Module):
     kwargs['normalize'] = self.config.l2_normalize
     kwargs['normalize_per_head'] = self.config.l2_normalize_per_head
     aerial_pixels = aerial_batch['image']
-    logits, tokens = self.aerial_backbone.encode_multiview(
+    emb, tokens = self.aerial_backbone.encode_multiview(
         aerial_pixels, *args, **kwargs
     )
-    return logits, tokens
+    return emb, tokens
 
   def get_image_pixels(
       self, batch: types.Batch, train: bool
@@ -184,25 +184,25 @@ class GeoLocalizer(nn.Module):
 
   def stochastic_probs(
       self,
-      logits: FloatArray['B D'],
+      emb: FloatArray['B D'],
       source_latlngs: FloatArray['B 2'],
-      target_logits: FloatArray['B D'],
+      target_emb: FloatArray['B D'],
       target_latlngs: FloatArray['B 2'],
       batch: types.Batch,
       axis_name: str | None = 'batch',
       target_name: str = 'aerial',
   ) -> types.Predictions:
-    """Compute similarity between SV and aerial logits within batch (training)."""
-    batch_size = logits.shape[0]
+    """Compute similarity between SV and aerial embeddings within batch (training)."""
+    batch_size = emb.shape[0]
     distributed = axis_name is not None and not self.is_initializing()
     if distributed:
-      target_logits_in_batch = jax.lax.all_gather(
-          target_logits, axis_name=axis_name, tiled=True
+      target_emb_in_batch = jax.lax.all_gather(
+          target_emb, axis_name=axis_name, tiled=True
       )  # NB x D
     else:
-      target_logits_in_batch = target_logits
+      target_emb_in_batch = target_emb
 
-    cell_idx = jnp.asarray(batch['query']['cell_idx'])
+    cell_idx = jnp.asarray(batch['cell_idx'])
     cell_centers_ll = jnp.asarray(target_latlngs)
     if distributed:
       all_cell_idx_in_batch = jax.lax.all_gather(
@@ -217,7 +217,7 @@ class GeoLocalizer(nn.Module):
 
     all_cell_idx = all_cell_idx_in_batch
     all_cell_centers_ll = all_cell_centers_ll_in_batch
-    aerial_logits = target_logits_in_batch
+    aerial_emb = target_emb_in_batch
 
     gt_index = jnp.arange(batch_size)  # B
 
@@ -234,8 +234,8 @@ class GeoLocalizer(nn.Module):
 
     # Sim / probs: B x N*B
     similarity = misc.compute_similarity(
-        logits[:, None],
-        aerial_logits[None],
+        emb[:, None],
+        aerial_emb[None],
         normalize=False,
     )[
         ..., 0
@@ -248,8 +248,8 @@ class GeoLocalizer(nn.Module):
         'same_cell': same_cell,
         'gt_index': gt_index,
         'all_cell_idx': all_cell_idx,
-        f'all_{target_name}_logits': target_logits,
-        f'all_{target_name}_in_batch': target_logits_in_batch,
+        f'all_{target_name}_emb': target_emb,
+        f'all_{target_name}_in_batch': target_emb_in_batch,
         'gt_similarity': jnp.take_along_axis(
             similarity, gt_index[:, None], axis=-1
         )[..., 0],
@@ -266,7 +266,7 @@ class GeoLocalizer(nn.Module):
       axis_name: str | None = 'batch',
   ) -> types.Predictions:
     image_pixels, aerial_pixels = self.get_image_pixels(batch, train)
-    logits, _ = self.encode_query(
+    query_emb, _ = self.encode_query(
         {'image': image_pixels},
         train=train,
         sow_attention=self.config.sow_attention and not train,
@@ -275,36 +275,35 @@ class GeoLocalizer(nn.Module):
     aerial_batch = {
         'image': aerial_pixels[..., :3],
     }
-    if 'cell_idx' in batch['query']:
-      aerial_batch['cell_idxs'] = batch['query']['cell_idx'][:, None]
-    aerial_logits, _ = self.encode_aerial(
+    if 'cell_idx' in batch:
+      aerial_batch['cell_idxs'] = batch['cell_idx'][:, None]
+    aerial_emb, _ = self.encode_aerial(
         aerial_batch,
         train=train,
         sow_attention=self.config.sow_attention and not train,
     )
 
     pred = {
-        'logits': logits,
-        'aerial_logits': aerial_logits,
-        'aerial_logits': aerial_logits,
+        'query_emb': query_emb,
+        'aerial_emb': aerial_emb,
         'augmented_pixels': image_pixels,
         'augmented_aerial_pixels': aerial_pixels[..., :3],
     }
 
     # Stochastic probability from SV to all aerial in batch.
     pred['query_aerial_stochastic_probs'] = self.stochastic_probs(
-        logits,
+        query_emb,
         batch['query']['latlng'],
-        aerial_logits,
+        aerial_emb,
         batch['aerial']['latlng'],
         batch,
         axis_name=axis_name,
     )
     # Inverse probability from aerial to all SV in batch.
     aerial_sv_probs = self.stochastic_probs(
-        aerial_logits,
+        aerial_emb,
         batch['aerial']['latlng'],
-        logits,
+        query_emb,
         batch['query']['latlng'],
         batch,
         axis_name=axis_name,
@@ -317,11 +316,11 @@ class GeoLocalizer(nn.Module):
         'query': batch['query']['adjacent_cell_idx'],
         'aerial': batch['aerial']['adjacent_cell_idx'],
     }
-    all_logits = {
-        'query': pred['logits'],
-        'aerial': pred['aerial_logits'],
+    all_embs = {
+        'query': pred['query_emb'],
+        'aerial': pred['aerial_emb'],
     }
-    for name, logits in all_logits.items():
+    for name, emb in all_embs.items():
       prototypes = self.get_prototypes(self.prototype_dim)
       if getattr(self.config, f'detach_{name}_prototypes'):
         prototypes = jax.lax.stop_gradient(prototypes)
@@ -329,7 +328,7 @@ class GeoLocalizer(nn.Module):
       if self.config.masked_expsum and not self.is_initializing():
         assert self.config.shard_prototypes
         shard_max = distributed.max_and_masked_expsum(
-            logits,
+            emb,
             batch['query']['latlng'],
             prototypes,
             self.cell_centers,
@@ -343,9 +342,9 @@ class GeoLocalizer(nn.Module):
         if 'pos_sim' in shard_max:
           pos_sim = shard_max['pos_sim']
       else:
-        all_sim = self.compute_similarity_to_prototypes(logits, prototypes)
+        all_sim = self.compute_similarity_to_prototypes(emb, prototypes)
         all_idx = jnp.arange(self.num_cells)[None].repeat(
-            logits.shape[0], axis=0
+            emb.shape[0], axis=0
         )
         pos_sim = jnp.take_along_axis(all_sim, pos_idxs[name], axis=-1)
         pred[f'{name}_sim'] = all_sim
@@ -382,10 +381,10 @@ class GeoLocalizer(nn.Module):
         ]
 
       if pos_sim is None:
-        if prototypes.shape[-1] < logits.shape[-1]:
-          logits = logits[..., : prototypes.shape[-1]]
+        if prototypes.shape[-1] < emb.shape[-1]:
+          emb = emb[..., : prototypes.shape[-1]]
           if self.config.l2_normalize:
-            logits = misc.l2_normalize(logits)
+            emb = misc.l2_normalize(emb)
         if self.config.shard_prototypes and not self.is_initializing():
           pos_p = distributed.sharded_batched_gather(prototypes, pos_idxs[name])
         else:
@@ -396,7 +395,7 @@ class GeoLocalizer(nn.Module):
           )
 
         pos_sim = misc.compute_similarity(
-            logits[..., None, :],
+            emb[..., None, :],
             pos_p,
             normalize=False,
         )[..., 0]
@@ -408,7 +407,7 @@ class GeoLocalizer(nn.Module):
       pred[f'{name}_cell_idx'] = best_cell_idx
       pred[f'{name}_best_cell_idx'] = best_cell_idx
       pred[f'{name}_temperature'] = temperature[None].repeat(
-          logits.shape[0], axis=0
+          emb.shape[0], axis=0
       )
 
       pred[f'{name}_pos_sim'] = pos_sim
@@ -478,7 +477,7 @@ class GeoLocalizerModel(base.BaseModel):
       learning_rates: types.LearningRates | None = None,
   ) -> types.LossMetricsTuple:
     losses, metrics = {}, {}
-    gt_cell_idx = batch['query']['cell_idx']
+    gt_cell_idx = batch['cell_idx']
     # Log metrics of gt cell.
     for name in ['query', 'aerial']:
       gt_sim_l2 = (
@@ -492,7 +491,7 @@ class GeoLocalizerModel(base.BaseModel):
 
     # Log distance metrics of best cell.
     query_pred_p_dist = misc.haversine_distance(
-        self.s2cell_centers_ll[batch['query']['cell_idx']],
+        self.s2cell_centers_ll[batch['cell_idx']],
         self.s2cell_centers_ll[pred['query_best_cell_idx']],
     )[..., 0]
 
