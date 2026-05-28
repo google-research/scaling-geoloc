@@ -329,7 +329,8 @@ class GeoLocalizer(nn.Module):
             base=self.config.multi_similarity_base,
             required_idx=pos_idx,
             distance_threshold=(
-                self.config.same_cell_threshold if self.config.filter_by_distance else None
+                self.config.same_cell_threshold if
+                self.config.filter_by_distance else None
             ),
         )
         masked_expsum = shard_max['expsum']
