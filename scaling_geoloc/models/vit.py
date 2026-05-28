@@ -342,7 +342,7 @@ class ViTBackbone(nn.Module):
   train_last_layers: int = -1  # Train last n layers (-1: train all).
   normalization: Literal['none', 'imagenet', 'sat493m'] = 'imagenet'
   conv_embedding: bool = True
-  head: str = 'projection'  # 'projection' or 'linear'
+  head: str = 'projection'
   use_big_vision_backbone: bool = False
   head_config: ml_collections.ConfigDict = dataclasses.field(
       default_factory=ml_collections.ConfigDict
@@ -558,8 +558,6 @@ class ViTBackbone(nn.Module):
         head=self.head,
         head_config=self.head_config,
         train=train,
-        pooling=pooling,
-        sow_attention=sow_attention,
         normalize_per_head=normalize_per_head,
         dtype=self.dtype,
     )
@@ -610,22 +608,6 @@ class ViTBackbone(nn.Module):
         x.shape[:-3] + backbone_output_flat.shape[1:]
     )
 
-    if self.head == 'fervers':
-      # Perform softmax over all multi-view embeddings.
-      flat_tokens = backbone_output.reshape(
-          x.shape[:1] + (-1, backbone_output_flat.shape[-1])
-      )
-      emb = heads.SpatialSoftmax(
-          channels=self.head_output_dim,
-          name='output_projection',
-      )(flat_tokens)
-      if x.ndim == 5:
-        # Add a dimension for the number of multi-view images.
-        emb = emb[..., None, :].repeat(x.shape[1], axis=-2)
-      elif x.ndim > 5:
-        raise ValueError(f'Unsupported number of dimensions: {x.ndim}')
-      if normalize:
-        emb = misc.l2_normalize(emb)
     return emb, backbone_output
 
   def output_dim(self) -> int:
