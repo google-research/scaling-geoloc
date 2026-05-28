@@ -24,6 +24,7 @@ from etils.array_types import FloatArray
 from etils.array_types import IntArray
 from flax import jax_utils
 import jax
+from jaxlib._jax import Device as JaxDevice
 import jax.numpy as jnp
 import numpy as np
 from scenic.dataset_lib import dataset_utils
@@ -32,7 +33,7 @@ import tqdm
 from scaling_geoloc.utils import misc
 
 
-def to_device_safe(data: Any, device: jax.Device) -> Any:
+def to_device_safe(data: Any, device: JaxDevice) -> Any:
   def maybe_put_to_device(x):
     try:
       return jax.device_put(x, device)
@@ -54,7 +55,7 @@ def get_process_batch_size(batch_size: int) -> int:
 def default_pmap_sharding(
     shape: tuple[int, ...],
     sharded_dim: int | None = 0,
-    devices: list[jax.Device] | None = None,
+    devices: list[JaxDevice] | None = None,
 ) -> jax.sharding.Sharding:
   """Creates a sharding for pmap-style parallelism using only public JAX APIs."""
   if not jax.config.jax_pmap_shmap_merge:
@@ -604,6 +605,106 @@ def max_and_masked_expsum(
   expsum = jnp.exp((similarity - base) * beta).sum(-1)
   # Similarity is ND*B x ... x N // ND
   expsum = jax.lax.psum_scatter(expsum, axis_name='batch', tiled=True)
+  output = {
+      'best_sim': best_sim,
+      'best_idx': best_idx,
+      'expsum': expsum,
+  }
+  if pos_sim is not None:
+    output['pos_sim'] = pos_sim
+  return output
+
+
+def max_and_masked_expsum_ring(
+    batch_logits: FloatArray['B D'],
+    batch_latlng: FloatArray['B 2'],
+    sharded_logits: FloatArray['N//ND D'],
+    global_latlng: FloatArray['N 2'],
+    normalize: bool = False,
+    beta: float = 1.0,
+    base: float = 0.0,
+    distance_threshold: float | None = None,
+    required_idx: IntArray['B K'] | None = None,
+) -> Mapping[str, Any]:
+  """Like max_and_masked_expsum but O(B * N//ND) memory via prototype ring.
+
+  Rotates the prototype shard around the ring ND times. Each device accumulates
+  partial statistics for its own local batch only, so peak memory per device is
+  O(B * N//ND) rather than O(ND*B * N//ND).
+  """
+  num_devices = jax.device_count()
+  shard_size = sharded_logits.shape[0]
+  device_idx = jax.lax.axis_index('batch')
+
+  # Slice of global_latlng for the current prototype shard.
+  def _latlng_for_shard(origin_device):
+    return jax.lax.dynamic_slice_in_dim(
+        global_latlng, origin_device * shard_size, shard_size, axis=0
+    )
+
+  # Initial state: accumulated expsum, running (best_sim, best_global_idx),
+  # and (optionally) pos_sim accumulated across shards.
+  expsum = jnp.zeros(batch_logits.shape[0])
+  best_sim = jnp.full(batch_logits.shape[0], -jnp.inf)
+  best_idx = jnp.zeros(batch_logits.shape[0], dtype=jnp.int32)
+  pos_sim = (
+      jnp.zeros_like(required_idx, dtype=batch_logits.dtype)
+      if required_idx is not None
+      else None
+  )
+
+  current_shard = sharded_logits
+
+  for t in range(num_devices):
+    # Which device originally owned this shard?
+    origin_device = (device_idx + t) % num_devices
+    shard_offset = origin_device * shard_size
+
+    # [B, N//ND]
+    sim = misc.compute_similarity(
+        batch_logits[:, None, :],
+        current_shard[None],
+        normalize=normalize,
+    )[..., 0]
+
+    # Update running argmax from unmasked similarity (matches original behaviour).
+    local_best_local_idx = jax.lax.stop_gradient(sim).argmax(-1)
+    local_best_sim = jnp.take_along_axis(sim, local_best_local_idx[:, None], axis=-1)[:, 0]
+    local_best_global_idx = shard_offset + local_best_local_idx
+    update = local_best_sim > best_sim
+    best_sim = jnp.where(update, local_best_sim, best_sim)
+    best_idx = jnp.where(update, local_best_global_idx, best_idx)
+
+    # Accumulate pos_sim: gather similarities at required global indices.
+    if required_idx is not None:
+      local_idx = required_idx - shard_offset
+      valid = (local_idx >= 0) & (local_idx < shard_size)
+      gathered = jnp.take_along_axis(sim, jnp.where(valid, local_idx, 0), axis=-1)
+      pos_sim = pos_sim + jnp.where(valid, gathered, 0.0)
+
+      # Mask positives out of expsum.
+      oob_idx = jnp.where(valid, local_idx, shard_size)
+      sim = jnp.put_along_axis(sim, oob_idx, -jnp.inf, axis=-1, mode='drop', inplace=False)
+
+    # Apply distance filter.
+    if distance_threshold is not None:
+      shard_latlng = _latlng_for_shard(origin_device)
+      distances = misc.haversine_distance(
+          batch_latlng[:, None, :], shard_latlng[None]
+      )[..., 0]
+      sim = jnp.where(distances > distance_threshold, sim, -jnp.inf)
+
+    # Accumulate expsum.
+    expsum = expsum + jnp.exp((sim - base) * beta).sum(-1)
+
+    # Rotate shard to next device (ring).
+    if t < num_devices - 1:
+      current_shard = jax.lax.ppermute(
+          current_shard,
+          axis_name='batch',
+          perm=[(i, (i - 1) % num_devices) for i in range(num_devices)],
+      )
+
   output = {
       'best_sim': best_sim,
       'best_idx': best_idx,
