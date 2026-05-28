@@ -54,20 +54,6 @@ def get_augment_fn(
   return augmentations.per_image(augmentations.sequential(list_augmentations))
 
 
-def flatten_batch(batch: types.Batch, stride: int | None = None) -> types.Batch:
-  """Simplifies a batch by removing unnecessary dimensions."""
-  batch_views = dict(batch['query'])
-  if stride is not None:
-    batch_views = {
-        k: (
-            misc.crop_to_multiple(v, stride)
-            if (isinstance(v, jnp.ndarray) and v.ndim == 4)
-            else v
-        )
-        for k, v in batch_views.items()
-    }
-  return {**batch, **batch_views}
-
 
 class GeoLocalizer(nn.Module):
   """SV-aerial retrieval model."""
@@ -167,8 +153,7 @@ class GeoLocalizer(nn.Module):
       self, batch: types.Batch, train: bool
   ) -> tuple[FloatArray['... H W C'], FloatArray['... N G G C']]:
     """Preprocess the image pixels (crop, augment)."""
-    batch = flatten_batch(batch, stride=None)
-    image_pixels = batch['image']
+    image_pixels = batch['query']['image']
     aerial_pixels = batch['aerial']['image']
 
     # Crop to multiple of patch size to avoid boundary effects.
@@ -217,7 +202,7 @@ class GeoLocalizer(nn.Module):
     else:
       target_logits_in_batch = target_logits
 
-    cell_idx = jnp.asarray(batch['cell_idx'])
+    cell_idx = jnp.asarray(batch['query']['cell_idx'])
     cell_centers_ll = jnp.asarray(target_latlngs)
     if distributed:
       all_cell_idx_in_batch = jax.lax.all_gather(
@@ -281,7 +266,6 @@ class GeoLocalizer(nn.Module):
       axis_name: str | None = 'batch',
   ) -> types.Predictions:
     image_pixels, aerial_pixels = self.get_image_pixels(batch, train)
-    batch = flatten_batch(batch, stride=None)
     logits, _ = self.encode_query(
         {'image': image_pixels},
         train=train,
@@ -291,8 +275,8 @@ class GeoLocalizer(nn.Module):
     aerial_batch = {
         'image': aerial_pixels[..., :3],
     }
-    if 'cell_idx' in batch:
-      aerial_batch['cell_idxs'] = batch['cell_idx'][:, None]
+    if 'cell_idx' in batch['query']:
+      aerial_batch['cell_idxs'] = batch['query']['cell_idx'][:, None]
     aerial_logits, _ = self.encode_aerial(
         aerial_batch,
         train=train,
@@ -310,7 +294,7 @@ class GeoLocalizer(nn.Module):
     # Stochastic probability from SV to all aerial in batch.
     pred['query_aerial_stochastic_probs'] = self.stochastic_probs(
         logits,
-        batch['latlng'],
+        batch['query']['latlng'],
         aerial_logits,
         batch['aerial']['latlng'],
         batch,
@@ -321,7 +305,7 @@ class GeoLocalizer(nn.Module):
         aerial_logits,
         batch['aerial']['latlng'],
         logits,
-        batch['latlng'],
+        batch['query']['latlng'],
         batch,
         axis_name=axis_name,
         target_name='aerialquery',
@@ -330,7 +314,7 @@ class GeoLocalizer(nn.Module):
 
     # Compute SV-CC similarity.
     pos_idxs = {
-        'query': batch['adjacent_cell_idx'],
+        'query': batch['query']['adjacent_cell_idx'],
         'aerial': batch['aerial']['adjacent_cell_idx'],
     }
     all_logits = {
@@ -346,7 +330,7 @@ class GeoLocalizer(nn.Module):
         assert self.config.shard_prototypes
         shard_max = distributed.max_and_masked_expsum(
             logits,
-            batch['latlng'],
+            batch['query']['latlng'],
             prototypes,
             self.cell_centers,
             normalize=False,
@@ -494,8 +478,7 @@ class GeoLocalizerModel(base.BaseModel):
       learning_rates: types.LearningRates | None = None,
   ) -> types.LossMetricsTuple:
     losses, metrics = {}, {}
-    batch = flatten_batch(batch)
-    gt_cell_idx = batch['cell_idx']
+    gt_cell_idx = batch['query']['cell_idx']
     # Log metrics of gt cell.
     for name in ['query', 'aerial']:
       gt_sim_l2 = (
@@ -509,7 +492,7 @@ class GeoLocalizerModel(base.BaseModel):
 
     # Log distance metrics of best cell.
     query_pred_p_dist = misc.haversine_distance(
-        self.s2cell_centers_ll[batch['cell_idx']],
+        self.s2cell_centers_ll[batch['query']['cell_idx']],
         self.s2cell_centers_ll[pred['query_best_cell_idx']],
     )[..., 0]
 
