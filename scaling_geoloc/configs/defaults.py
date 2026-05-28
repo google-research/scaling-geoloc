@@ -434,7 +434,7 @@ def geo_localizer() -> ml_collections.ConfigDict:
   config.prototype_dim = None  # None → use backbone output_dim
   config.crop = 'none'
   config.crop_size = (224, 224)
-  config.shard_codes = False
+  config.shard_prototypes = False
   config.l2_normalize = False
   config.l2_normalize_per_head = False
   config.topk_recall_target = None

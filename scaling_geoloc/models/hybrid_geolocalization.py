@@ -100,7 +100,7 @@ class GeoLocalizer(nn.Module):
   @nn.compact
   def get_prototypes(self, prototype_dim: int) -> FloatArray['N D']:
     num_cells = self.num_cells
-    if self.config.shard_codes and not self.is_initializing():
+    if self.config.shard_prototypes and not self.is_initializing():
       num_cells = num_cells // jax.device_count()
     init_fn = nn.initializers.normal(stddev=1 / np.sqrt(prototype_dim))
     prototypes = self.param(
@@ -122,7 +122,7 @@ class GeoLocalizer(nn.Module):
     """Computes similarity to cell codes."""
     logits = jnp.expand_dims(logits, axis=-2)
     prototypes = prototypes[None]
-    if self.config.shard_codes and not self.is_initializing():
+    if self.config.shard_prototypes and not self.is_initializing():
       # @TODO: Probably only need this one.
       return distributed.sharded_similarity(logits, prototypes, normalize=normalize)
     else:
@@ -153,7 +153,7 @@ class GeoLocalizer(nn.Module):
       k: int,
   ) -> tuple[FloatArray['B N'], IntArray['B N']]:
     """Computes similarity to cell codes."""
-    if self.config.shard_codes and not self.is_initializing():
+    if self.config.shard_prototypes and not self.is_initializing():
       neg_sim, neg_idx = distributed.distributed_topk(
           logits,
           prototypes,
@@ -257,16 +257,9 @@ class GeoLocalizer(nn.Module):
       all_cell_idx_in_batch = cell_idx
       all_cell_centers_ll_in_batch = cell_centers_ll
 
-    # Handle memory:
-    to_memorize = {
-        'all_cell_idx': all_cell_idx_in_batch,
-        'all_cell_centers_ll': all_cell_centers_ll_in_batch,
-        f'all_{target_name}_logits': target_logits_in_batch,
-    }
-    updated_variables = to_memorize
-    all_cell_idx = updated_variables['all_cell_idx']
-    all_cell_centers_ll = updated_variables['all_cell_centers_ll']
-    aerial_logits = updated_variables[f'all_{target_name}_logits']
+    all_cell_idx = all_cell_idx_in_batch
+    all_cell_centers_ll = all_cell_centers_ll_in_batch
+    aerial_logits = target_logits_in_batch
 
     gt_index = jnp.arange(batch_size)  # B
 
@@ -377,7 +370,7 @@ class GeoLocalizer(nn.Module):
         prototypes = jax.lax.stop_gradient(prototypes)
       pos_sim = None
       if self.config.masked_expsum and not self.is_initializing():
-        assert self.config.shard_codes
+        assert self.config.shard_prototypes
         shard_max = distributed.max_and_masked_expsum(
             logits,
             batch['latlng'],
@@ -441,7 +434,7 @@ class GeoLocalizer(nn.Module):
           logits = logits[..., : prototypes.shape[-1]]
           if self.config.l2_normalize:
             logits = misc.l2_normalize(logits)
-        if self.config.shard_codes and not self.is_initializing():
+        if self.config.shard_prototypes and not self.is_initializing():
           pos_p = distributed.sharded_batched_gather(prototypes, pos_idxs[name])
         else:
           pos_p = jnp.take_along_axis(
