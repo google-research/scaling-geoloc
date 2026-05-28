@@ -14,7 +14,7 @@
 
 """Hybrid geolocalization model."""
 
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from etils.array_types import FloatArray, IntArray
 import flax.linen as nn
@@ -24,6 +24,7 @@ import jax.numpy as jnp
 import jaxtyping as jt
 import ml_collections
 
+from scenic.train_lib import train_utils
 from scaling_geoloc import types
 from scaling_geoloc.configs import defaults
 from scaling_geoloc.models import base
@@ -460,7 +461,6 @@ class GeoLocalizer(nn.Module):
       )
 
       pred[f'{name}_pos_sim'] = pos_sim
-      pred[f'{name}_pos_idxs'] = pos_idxs[name]
 
     if 'cell_idx' in batch:
       pred['gt_cell_idx'] = batch['cell_idx']
@@ -533,7 +533,7 @@ class GeoLocalizerModel(base.BaseModel):
     for name in ['query', 'aerial']:
       gt_sim_l2 = (
           pred[f'{name}_pos_sim']
-          * (pred[f'{name}_pos_idxs'] == gt_cell_idx[:, None])
+          * (batch[name]['adjacent_cell_idx'] == gt_cell_idx[:, None])
       ).sum(-1)
       losses[f'{name}_sim_l2'] = gt_sim_l2
       metrics[f'{name}_precision'] = (
@@ -578,43 +578,19 @@ class GeoLocalizerModel(base.BaseModel):
         if self.config.multi_similarity_factors != 'all':
           if name not in self.config.multi_similarity_factors:
             continue
-        proxy_pos = getattr(self.config, f'{prefix}_multi_similarity_proxy_positives')
-        weights = 1.0
-        if proxy_pos == 'cell' or proxy_pos is None:
-          gt_idx = batch['cell_idx'][:, None]
-        elif proxy_pos == 'frustum':
-          gt_idx = batch['frustum_cell_idx']
-        elif proxy_pos == 'adjacent':
-          if prefix == 'query':
-            gt_idx = batch['adjacent_cell_idx']
-            weights = batch['adjacent_weights']
-          elif prefix == 'aerial':
-            gt_idx = batch['aerial']['adjacent_cell_idx']
-            weights = batch['aerial']['adjacent_weights']
-          else:
-            raise ValueError(f'Unknown prefix for adjacent: {prefix}')
-          weights = jnp.where(gt_idx > -1, weights, 0)
-          weights = (
-              (pred[f'{prefix}_pos_idxs'][..., None] == gt_idx[..., None, :])
-              * weights[..., None, :]
-          ).sum(-1)
-        else:
-          raise ValueError(f'Unknown proxy_pos: {proxy_pos}')
+        gt_idxs = batch[prefix]['adjacent_cell_idx']
+        weights = jnp.where(gt_idxs > -1, batch[prefix]['adjacent_weights'], 0)
+        weights = weights / weights.sum(-1, keepdims=True).clip(min=1e-6)
+        weights = (
+            (gt_idxs[..., None] == gt_idxs[..., None, :])
+            * weights[..., None, :]
+        ).sum(-1)
 
         pos_weights = jax.vmap(lambda x, y: jnp.isin(x, y) & (x > -1))(
-            pred[f'{prefix}_pos_idxs'], gt_idx
+            gt_idxs, gt_idxs
         )
 
-        if (
-            self.config.multi_similarity_mean_pos_sim
-            and proxy_pos != 'adjacent'
-        ):
-          # We actually do this! (SV)
-          pos_sim = misc.masked_mean(
-              pred[f'{prefix}_pos_sim'], pos_weights * weights, axis=-1
-          )
-        else:
-          pos_sim = (pos_weights * weights * pred[f'{prefix}_pos_sim']).sum(-1)
+        pos_sim = (pos_weights * weights * pred[f'{prefix}_pos_sim']).sum(-1)
         metrics[f'{prefix}_area_pos_sim'] = pos_sim
         metrics[f'{prefix}_area_size'] = pos_weights.sum(-1)
         pos_sims[name] = pos_sim
@@ -651,3 +627,55 @@ class GeoLocalizerModel(base.BaseModel):
     losses, metrics = self._loss_metrics_function(pred, batch)
     losses['total'] = types.compose_loss(losses, self.config.compose_loss)
     return losses, metrics
+
+  def get_target_shapes(self, is_replicated: bool) -> Sequence[tuple[int, ...]]:
+    if is_replicated:
+      num_cells = self.s2cell_centers_ll.shape[0] // jax.device_count()
+    else:
+      num_cells = self.s2cell_centers_ll.shape[0]
+    target_dims = [(num_cells, self.config.prototype_dim)]
+    if is_replicated:
+      target_dims = [(jax.local_device_count(), *x) for x in target_dims]
+    return target_dims
+
+  def unreplicate_state(
+      self, train_state: train_utils.TrainState
+  ) -> train_utils.TrainState:
+    # pytype: disable=attribute-error
+    if self.config.shard_prototypes:
+      train_state = distributed.unshard_or_unreplicate_train_state(
+          train_state,
+          distributed.unshard_or_unreplicate_from_shape_fn(
+              self.get_target_shapes(is_replicated=True),
+              half_precision=self.config.store_half_precision,
+          ),
+      )
+      return train_state
+    else:
+      return super().unreplicate_state(train_state)
+
+  def replicate_state(
+      self, train_state: train_utils.TrainState
+  ) -> train_utils.TrainState:
+    # pytype: disable=attribute-error
+    if self.config.shard_prototypes:
+      # We check for the prototypes by shape here. This is a bit hacky.
+      train_state = distributed.shard_or_replicate_train_state(
+          train_state,
+          distributed.shard_or_replicate_from_shape_fn(
+              self.get_target_shapes(is_replicated=False),
+          ),
+      )
+      return train_state
+    else:
+      return super().replicate_state(train_state)
+    # pytype: enable=attribute-error
+
+  def aggregate_grads(self, grad: types.Grad) -> types.Grad:
+    if self.config.shard_prototypes and 'prototypes' in grad:
+      target_shapes = [grad['prototypes'].shape]
+      return jax.tree.map(
+          distributed.pmean_or_divide_from_shape_fn(target_shapes), grad
+      )
+    else:
+      return jax.lax.pmean(grad, axis_name='batch')
