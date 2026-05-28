@@ -568,27 +568,6 @@ class ViTBackbone(nn.Module):
       x = misc.l2_normalize(x)
     return x, backbone_output
 
-  def get_patch_token_indices(self, height: int, width: int) -> tuple[int, int]:
-    """Returns the start and end index of patch tokens.
-
-    Sequence of tokens is:
-    [class token] + [storage tokens] + [patch tokens] + [extra tokens]
-
-    Args:
-      height: The height of the input image.
-      width: The width of the input image.
-
-    Returns:
-      A tuple of the start (inclusive) and end (exclusive) index of patch
-      tokens.
-    """
-    num_patch_tokens = (height // self.patches.size[0]) * (
-        width // self.patches.size[1]
-    )
-    start_index = (1 if self.add_class_token else 0) + self.num_storage_tokens
-    end_index = start_index + num_patch_tokens
-    return start_index, end_index
-
   @nn.compact
   def encode_images(
       self,
