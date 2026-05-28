@@ -112,55 +112,86 @@ NUM_ADJACENT_CELLS = 4
 
 
 @dataclasses.dataclass
-class TrainExampleSpec:
-  """Feature spec for the precomputed cell index paired with an ExampleSpec.
+class ModalityIndexSpec:
+  """Feature spec for per-modality cell assignments in index_level<N>/<modality>/.
 
-  This spec is stored in a separate index dataset (e.g. ``index_level17/``)
-  alongside the image shards.  It records, for each example:
+  Each shard stores a top-level ``cell_idx`` plus interpolation neighbours
+  nested under the modality key (``'query'`` or ``'aerial'``).  When merged
+  via ``JoinedDataSource(..., key=None)`` the ``cell_idx`` surfaces at the
+  top level and the neighbours deep-merge into the existing modality sub-dict.
 
-  * A single shared ``cell_idx`` (the S2 cell containing both the query and
-    aerial location — they share a cell since they are co-located).
-  * Per-modality ``adjacent_cell_idx`` and optionally ``adjacent_weights`` for
-    bilinear interpolation of the cell-code embedding.
-
-  On-disk structure::
+  On-disk structure (e.g. modality='aerial')::
 
       {
-        'cell_idx':  int32  []        # index into the cell grid
-        'query': {
-          'adjacent_cell_idx':  int32   [NUM_ADJACENT_CELLS]
-          'adjacent_weights':   float32 [NUM_ADJACENT_CELLS]  # optional
-        }
+        'cell_idx': int32 [],
         'aerial': {
-          'adjacent_cell_idx':  int32   [NUM_ADJACENT_CELLS]
-          'adjacent_weights':   float32 [NUM_ADJACENT_CELLS]  # optional
+          'adjacent_cell_idx': int32  [NUM_ADJACENT_CELLS],
+          'adjacent_weights':  float32 [NUM_ADJACENT_CELLS],
         }
       }
 
   Attributes:
-    store_adjacent_weights: Whether to store bilinear interpolation weights.
-      When False, only ``adjacent_cell_idx`` is stored; weights are computed
-      on-the-fly during training or omitted entirely.
+    modality: Either ``'query'`` or ``'aerial'``.
   """
 
-  store_adjacent_weights: bool = True
+  modality: str  # 'query' | 'aerial'
 
-  def _modality_spec(self) -> dict:
-    spec = {
+  def spec(self) -> dict:
+    return {
+        'cell_idx': tfds.features.Tensor(shape=(), dtype=tf.int32),
+        self.modality: {
+            'adjacent_cell_idx': tfds.features.Tensor(
+                shape=(NUM_ADJACENT_CELLS,), dtype=tf.int32
+            ),
+            'adjacent_weights': tfds.features.Tensor(
+                shape=(NUM_ADJACENT_CELLS,), dtype=tf.float32
+            ),
+        },
+    }
+
+
+@dataclasses.dataclass
+class TrainExampleSpec:
+  """Feature spec for a full paired training example (images + cell index).
+
+  Combines :class:`ExampleSpec` (images, latlng) with precomputed cell
+  assignments.  On-disk structure::
+
+      {
+        'cell_idx': int32 [],
+        'query': {
+          'image':              uint8   [H, W, 3],
+          'latlng':             float32 [2],
+          'adjacent_cell_idx':  int32   [NUM_ADJACENT_CELLS],
+          'adjacent_weights':   float32 [NUM_ADJACENT_CELLS],
+        },
+        'aerial': {
+          'image':              uint8   [H, W, 3],
+          'latlng':             float32 [2],
+          'adjacent_cell_idx':  int32   [NUM_ADJACENT_CELLS],
+          'adjacent_weights':   float32 [NUM_ADJACENT_CELLS],
+        },
+      }
+
+  Attributes:
+    query: Query image spec.
+    aerial: Aerial image spec.
+  """
+
+  query: QuerySpec = dataclasses.field(default_factory=QuerySpec)
+  aerial: AerialSpec = dataclasses.field(default_factory=AerialSpec)
+
+  def spec(self) -> dict:
+    adjacent = {
         'adjacent_cell_idx': tfds.features.Tensor(
             shape=(NUM_ADJACENT_CELLS,), dtype=tf.int32
         ),
+        'adjacent_weights': tfds.features.Tensor(
+            shape=(NUM_ADJACENT_CELLS,), dtype=tf.float32
+        ),
     }
-    if self.store_adjacent_weights:
-      spec['adjacent_weights'] = tfds.features.Tensor(
-          shape=(NUM_ADJACENT_CELLS,), dtype=tf.float32
-      )
-    return spec
-
-  def spec(self) -> dict:
-    """Returns the TFDS feature spec for one index example."""
     return {
         'cell_idx': tfds.features.Tensor(shape=(), dtype=tf.int32),
-        'query': self._modality_spec(),
-        'aerial': self._modality_spec(),
+        'query': {**self.query.spec(), **adjacent},
+        'aerial': {**self.aerial.spec(), **adjacent},
     }

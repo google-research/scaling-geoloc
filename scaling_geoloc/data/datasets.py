@@ -238,8 +238,8 @@ def create_dataset(
     source = joined_data_source.JoinedDataSource([
         (query_source, 'query'),
         (aerial_source, 'aerial'),
-        (query_index, None),
         (aerial_index, None),
+        (query_index, None),  # This last to force use query cell idx.
     ])
     return indexed_data_source.IndexedDataSource(source)
 

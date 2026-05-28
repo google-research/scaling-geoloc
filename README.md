@@ -60,14 +60,19 @@ Images and cell index are stored separately so multiple `index_level<N>/` direct
 {'image': uint8 [H, W, 3], 'latlng': float32 [2]}
 ```
 
-**`index_level<N>/query/` and `index_level<N>/aerial/` shards** store cell assignments:
+**`index_level<N>/query/` and `index_level<N>/aerial/` shards** (`ModalityIndexSpec`) store per-image cell assignments. Each shard has a top-level `cell_idx` and interpolation neighbours nested under its modality key:
 ```
-{
-  'cell_idx': int32,
-  'query':  {'adjacent_cell_idx': int32 [4], 'adjacent_weights': float32 [4]},
-  'aerial': {'adjacent_cell_idx': int32 [4], 'adjacent_weights': float32 [4]},
-}
+# index_level<N>/query/              # index_level<N>/aerial/
+{                                    {
+  'cell_idx': int32 [],                'cell_idx': int32 [],
+  'query': {                           'aerial': {
+    'adjacent_cell_idx': int32 [4],      'adjacent_cell_idx': int32 [4],
+    'adjacent_weights':  float32 [4],    'adjacent_weights':  float32 [4],
+  }                                    }
+}                                    }
 ```
+
+When four sources are joined for training (`JoinedDataSource` order: query images → aerial images → aerial index → query index), the query's `cell_idx` takes precedence and the neighbours deep-merge into their respective sub-dicts.
 
 **`metadata.npz`** contains `cell_centers_latlng: float32 [N_cells, 2]` — lat/lng of each cell centre.
 
@@ -77,15 +82,15 @@ Images and cell index are stored separately so multiple `index_level<N>/` direct
 
 | Field | Shape | Description |
 |---|---|---|
+| `cell_idx` | `int32` | S2 cell index (shared by query and aerial) |
 | `query/image` | `uint8 [H, W, 3]` | Ground-view image |
 | `query/latlng` | `float32 [2]` | Ground-truth lat/lng |
-| `query/adjacent_cell_idx` | `int32 [4]` | Neighbouring cell indices |
-| `query/adjacent_weights` | `float32 [4]` | Bilinear interpolation weights |
+| `query/adjacent_cell_idx` | `int32 [4]` | Neighbouring cell indices for query |
+| `query/adjacent_weights` | `float32 [4]` | Bilinear interpolation weights for query |
 | `aerial/image` | `uint8 [H, W, 3]` | Aerial tile image |
 | `aerial/latlng` | `float32 [2]` | Aerial tile lat/lng |
-| `aerial/adjacent_cell_idx` | `int32 [4]` | Neighbouring cell indices |
-| `aerial/adjacent_weights` | `float32 [4]` | Bilinear interpolation weights |
-| `cell_idx` | `int32` | S2 cell index of the query |
+| `aerial/adjacent_cell_idx` | `int32 [4]` | Neighbouring cell indices for aerial |
+| `aerial/adjacent_weights` | `float32 [4]` | Bilinear interpolation weights for aerial |
 
 ---
 
@@ -140,7 +145,10 @@ The eval script runs each eval in `config.test_evals` and writes results under `
 |---|---|---|
 | `cross_view` | `encode_query` | Aerial images via `encode_aerial` |
 | `classification` | `encode_query` | Learned cell prototypes + `metadata.npz` cell centres |
-| `hybrid` | `encode_query` | Concatenation of aerial images and cell prototypes |
+| `hybrid` | `encode_query` | Aerial images blended with cell prototypes via `cell_idx` |
+
+> **Index level consistency for `hybrid`:**
+> Each aerial embedding is blended with its cell prototype using `cell_idx`. The `index_subdir` used at eval must match the cell resolution the model was trained with, so that `cell_idx` values align with the prototype table. Many-to-one is fine — multiple aerial images can share the same `cell_idx`. Set `cell_idx = -1` on an aerial example to skip prototype blending for that entry.
 
 ### Reported metrics
 
