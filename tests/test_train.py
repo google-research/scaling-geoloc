@@ -57,7 +57,7 @@ class TestTrainStep:
         """train_step metrics include 'total' loss."""
         batch = dataset_utils.shard(dummy_batch)
         metrics, _ = experiment.train_step(batch, shard=False)
-        assert 'total' in metrics
+        assert 'loss/total' in metrics
 
     def test_params_change_after_step(self, geo_model, dummy_batch, train_config):
         """Parameters are updated after a train step."""

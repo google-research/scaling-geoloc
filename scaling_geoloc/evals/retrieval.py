@@ -382,22 +382,3 @@ class RetrievalEval(base_eval.BaseEval):
     if writer is not None:
       writer.write_scalars(0, summaries)
     return per_query, summaries, {}
-
-  @classmethod
-  def default_config(cls, batch_size: int) -> ml_collections.ConfigDict:
-    config = super().default_config(batch_size)
-    config.task = 'cross_view'  # 'cross_view' | 'classification' | 'hybrid'
-    config.split = 'test'
-    config.k_values = (1, 5, 20, 100)
-    config.encode_query_method = 'encode_query'
-    config.encode_aerial_method = 'encode_aerial'
-    config.build_prototype_db_method = 'build_prototype_database'
-    config.mutable_collections = ('batch_stats',)
-    config.kappa = 1.0
-    config.batch_size_retrieval = None  # None: use same batch_size as build_index
-    config.db_split = None  # None: use same split as query
-    config.data = defaults.data('').unlock()
-    config.data.preprocess.filter_invalid_cells = False
-    config.data.db_preprocess = defaults.preprocess().unlock()
-    config.data.db_preprocess.filter_invalid_cells = False
-    return config
