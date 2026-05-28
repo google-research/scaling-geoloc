@@ -23,7 +23,6 @@ from scaling_geoloc.models import base
 
 MODELS = {
     'hybrid_geolocalization': ('hybrid_geolocalization', 'GeoLocalizerModel'),
-    'image_retrieval': ('image_retrieval', 'ImageRetrievalModel'),
 }
 
 EVALS = {
