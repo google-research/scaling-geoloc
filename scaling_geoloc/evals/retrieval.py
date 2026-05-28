@@ -313,7 +313,7 @@ class RetrievalEval(base_eval.BaseEval):
       )
       aerial_db = build_index(
           encode_aerial,
-          _make_data_source(cfg.data.data_dir, index_dir, cfg.db_split, 'aerial'),
+          _make_data_source(cfg.data.data_dir, index_dir, cfg.db_split or split, 'aerial'),
           cfg.data,
           batch_size,
           transformations=transformations,
@@ -375,7 +375,7 @@ class RetrievalEval(base_eval.BaseEval):
     self.write_note('Computing retrieval metrics...')
     per_query, summaries = evaluate_retrieval(
         query_index, db, ks=ks,
-        query_batch_size=cfg.eval_batch_size or batch_size,
+        query_batch_size=cfg.batch_size_retrieval or batch_size,
     )
     logging.info('Retrieval summaries:\n%s', summaries)
 
@@ -394,8 +394,8 @@ class RetrievalEval(base_eval.BaseEval):
     config.build_prototype_db_method = 'build_prototype_database'
     config.mutable_collections = ('batch_stats',)
     config.kappa = 1.0
-    config.eval_batch_size = None  # None: use same batch_size as build_index
-    config.db_split = 'train'
+    config.batch_size_retrieval = None  # None: use same batch_size as build_index
+    config.db_split = None  # None: use same split as query
     config.data = defaults.data('').unlock()
     config.data.preprocess.filter_invalid_cells = False
     config.data.db_preprocess = defaults.preprocess().unlock()

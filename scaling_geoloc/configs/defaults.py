@@ -75,67 +75,6 @@ def base() -> ml_collections.ConfigDict:
   ).lock()
 
 
-def base_retrieval(location: str, total_steps: int = 100_000) -> config_dict.ConfigDict:
-  """Base config for retrieval models."""
-  config = base().unlock()
-
-  # Data configs.
-  config.data = data(location).unlock()
-  config.data.grain_num_threads = 16
-  config.data.grain_num_threads_valid = 8
-  config.data.grain_num_workers = 16
-  config.data.grain_num_workers_valid = 4
-  config.data.grain_prefetch_buffer_size = 32
-  config.data.deterministic = False
-
-  # Logging configs.
-  config.num_training_epochs = None
-  config.checkpoint_interval = 5_000
-  config.log_summary_interval = 200
-  config.log_eval_interval = 10_000
-  config.checkpoint = True
-  config.skip_first_eval = True
-  config.skip_eval = False
-  config.skip_train_viz = False
-  config.log_train_viz_interval = 5_000
-  config.num_eval_visualizations = 1
-  config.num_eval_steps = 16
-
-  # Optimizer configs.
-  config.optimizer.optax_name = 'scale_by_adam'
-  config.optimizer.optax_configs.b1 = 0.9
-  config.optimizer.optax_configs.b2 = 0.95
-  config.optimizer.weight_decay = 0.0
-
-  config.num_training_steps = total_steps
-  config.pretrained_path = None
-
-  config.lr = ml_collections.ConfigDict()
-  config.lr.learning_rate_schedule = 'compound'
-  config.lr.factors = 'constant * linear_warmup * cosine_decay'
-  config.lr.base_learning_rate = 3e-4
-  config.lr.warmup_steps = 5_000
-  config.lr.total_steps = config.get_ref('num_training_steps')
-  config.lr.steps_per_cycle = config.get_ref('num_training_steps')
-  config.lr.alpha = 1.0e-6 / config.lr.get('base_learning_rate')
-  config.pretrained_load_meta_data = True
-  config.pretrained_load_model_config = False
-  config.pretrained_filter = config_dict.ConfigDict()
-  config.pretrained_filter.ckpt_prefix_path = []
-  config.pretrained_filter.model_prefix_path = []
-  config.pretrained_filter.name_mapping = {}
-  config.pretrained_filter.skip_regex = None
-  config.batch_size_per_device = 1  # Set in get_config.
-  config.batch_size = config.get_ref('batch_size_per_device') * config.get_ref(
-      'device_count'
-  )
-  config.batch_size_eval = config.get_ref(
-      'batch_size_per_device'
-  ) * config.get_ref('device_count')
-  config.batch_size_viz = 2 * config.get_ref('device_count')
-  return config.lock()
-
-
 def preprocess() -> config_dict.ConfigDict:
   return config_dict.ConfigDict(
       dict(
@@ -152,7 +91,7 @@ def data(location: str) -> config_dict.ConfigDict:
           version=config_dict.placeholder(str),
           data_dir=DATA_DIR,
           location=location,
-          index_subdir='index_level17',
+          index_subdir='index_level15',
           train_split='train',
           valid_split='valid',
           shuffle_train=True,
@@ -246,12 +185,6 @@ def pretrained_backbone(
 
   # Try to load a convnet first.
   version, patch = {
-      'ibot_b16': ('B', 16),
-      'ibot_l16': ('L', 16),
-      'dinov1_b16': ('B', 16),
-      'dinov1_b8': ('B', 8),
-      'dinov1_s16': ('S', 16),
-      'dinov1_s8': ('S', 8),
       'dinov2_s14': ('S', 14),
       'dinov2_b14': ('B', 14),
       'dinov2_l14': ('L', 14),
@@ -259,7 +192,6 @@ def pretrained_backbone(
       'dinov3_b16': ('B', 16),
       'dinov3_l16': ('L', 16),
       'dinov3_satellite_l16': ('L', 16),
-      'dinov2_salad_b14': ('B', 14),
   }[name]
   config = vit(
       version,
@@ -269,12 +201,6 @@ def pretrained_backbone(
       **kwargs,
   ).unlock()
   config.pretrained_weights = {
-      'ibot_b16': 'ibot_b16',
-      'ibot_l16': 'ibot_l16',
-      'dinov1_b16': 'dino_official_b16',
-      'dinov1_b8': 'dino_official_b8',
-      'dinov1_s16': 'dino_official_s16',
-      'dinov1_s8': 'dino_official_s8',
       'dinov2_s14': 'dinov2_vits14',
       'dinov2_b14': 'dinov2_vitb14',
       'dinov2_l14': 'dinov2_vitl14',
@@ -283,7 +209,6 @@ def pretrained_backbone(
       'dinov3_l16': 'dinov3_vitl16',
       # The satellite pretrained weights are available only for the L16 version.
       'dinov3_satellite_l16': 'dinov3_satellite_vitl16',
-      'dinov2_salad_b14': 'dinov2_salad_b14',
   }[name]
   if 'satellite' in name:
     config.normalization = 'sat493m'
@@ -308,27 +233,6 @@ def pretrained_backbone(
   return config.lock()
 
 
-def retrieval_pretrained(
-    backbone: str,
-    aggregator: str,
-) -> ml_collections.ConfigDict:
-  """Creates a config to load a pretrained retrieval model."""
-  config = ml_collections.ConfigDict()
-  config.vit = pretrained_backbone(backbone, None)
-  aggregator_configs = {
-      'salad': dict(
-          hidden_dim=512,
-          token_dim=256,
-          cluster_dim=128,
-          num_clusters=64,
-          pretrained=True,
-      )
-  }
-  config.aggregator = ml_collections.ConfigDict(aggregator_configs[aggregator])
-  config.aggregator_name = aggregator
-  return config.lock()
-
-
 def eval_base(batch_size: int) -> ml_collections.ConfigDict:
   """Config for eval base."""
   config = ml_collections.ConfigDict()
@@ -339,100 +243,25 @@ def eval_base(batch_size: int) -> ml_collections.ConfigDict:
   return config
 
 
-def retrieval(location: str, batch_size: int) -> ml_collections.ConfigDict:
-  """Config for retrieval."""
-  config = eval_base(batch_size)
-  config.eval_name = 'retrieval'
-  config.method = config_dict.placeholder(str)
-  config.num_samples = None
-  config.num_plots = 10
-  config.batch_size_retrieval = 64
-  config.valid_distance_threshold = 100.0  # meters
-  config.topk_recall_target = None
-
-  config.data = data(location).unlock()
-  config.data.shuffle_valid = True
-  config.data.shuffle_train = False
-  config.data.train_split = 'valid'
-  config.data.valid_split = 'test'
-  config.data.grain_num_workers_valid = 0
-  config.data.grain_num_workers = 0
-  return config
-
-
-def cross_view_retrieval(
-    batch_size: int,
-    num_workers: int,
-    query: tuple[str, str],  # pylint: disable=unused-argument
-    database: tuple[str, str],
-    join_factor: float = -1.0,  # Do not join databases.
-    join_normalize: bool = False,
-) -> config_dict.ConfigDict:
-  """Returns a config for cross-view retrieval."""
-  query_location, query_split = query
-  database_location, database_split = database
-  config = retrieval(query_location, batch_size)
-  config.data.grain_num_workers_valid = num_workers
-  config.data.grain_num_workers = num_workers
-  config.method = 'encode_query'
-  config.method_db = 'encode_aerial'
-  config.data.train_split = config.data.valid_split = query_split
-  config.db_data = config_dict.ConfigDict()
-  config.db_data.location = database_location
-  config.db_data.train_split = config.db_data.valid_split = database_split
-  config.plot = True
-  config.db_data.preprocess = config_dict.ConfigDict()
-  config.db_data.preprocess.from_aerial = True
-
-  if join_factor > 0.0:
-    config.join_databases = True
-    config.join_factor = join_factor
-    config.db_from_model = 'build_s2cell_database'
-    config.join_normalize = join_normalize
-  return config
-
-
-def vpr_retrieval(
-    batch_size: int,
-    num_workers: int,
-    query: tuple[str, str, list[str]],  # pylint: disable=unused-argument
-    database: tuple[str, str, list[str]],
-    join_factor: float = -1.0,  # Do not join databases.
-) -> config_dict.ConfigDict:
-  """Returns a config for IBR retrieval."""
-  query_location, query_split = query
-  database_location, database_split = database
-  config = retrieval(query_location, batch_size)
-  config.data.grain_num_workers_valid = num_workers
-  config.data.grain_num_workers = num_workers
-  config.method = 'encode_query'
-  config.data.train_split = config.data.valid_split = query_split
-  config.db_data = config_dict.ConfigDict()
-  config.db_data.location = database_location
-  config.db_data.train_split = config.db_data.valid_split = database_split
-  config.plot = True
-
-  if join_factor > 0.0:
-    config.join_databases = True
-    config.join_factor = join_factor
-    config.db_from_model = 'build_s2cell_database'
-  return config
-
-
-def cell_code_retrieval(
-    batch_size: int,
-    num_workers: int,
-    location: str,
-    split: str,
-) -> config_dict.ConfigDict:
-  """Returns a config for cell code retrieval."""
-  config = retrieval(location, batch_size)
-  config.data.grain_num_workers_valid = num_workers
-  config.data.grain_num_workers = num_workers
-  config.method = 'encode_query'
-  config.db_from_model = 'build_s2cell_database'
-  config.data.train_split = config.data.valid_split = split
-  return config
+def retrieval_eval(location: str, batch_size: int) -> ml_collections.ConfigDict:
+  """Default config for RetrievalEval."""
+  cfg = eval_base(batch_size)
+  cfg.eval_name = 'retrieval'
+  cfg.task = 'cross_view'  # 'cross_view' | 'classification' | 'hybrid'
+  cfg.split = 'test'
+  cfg.db_split = None  # None: use same split as query
+  cfg.k_values = (1, 5, 20, 100)
+  cfg.encode_query_method = 'encode_query'
+  cfg.encode_aerial_method = 'encode_aerial'
+  cfg.build_prototype_db_method = 'build_prototype_database'
+  cfg.mutable_collections = ('batch_stats',)
+  cfg.kappa = 1.0
+  cfg.batch_size_retrieval = None  # None: use same batch_size as build_index
+  cfg.data = data(location).unlock()
+  cfg.data.preprocess.filter_invalid_cells = False
+  cfg.data.db_preprocess = preprocess().unlock()
+  cfg.data.db_preprocess.filter_invalid_cells = False
+  return cfg
 
 
 def geo_localizer() -> ml_collections.ConfigDict:
