@@ -24,7 +24,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn import decomposition
 
-from scaling_geoloc.utils.misc import grid_indices, l2_normalize
+from scaling_geoloc.utils.interpolate import grid_indices
+from scaling_geoloc.utils.misc import l2_normalize
 
 
 def apply_colormap(
