@@ -147,34 +147,6 @@ class GeoLocalizer(nn.Module):
     )
     return logits, tokens
 
-  def topk_similarities(
-      self,
-      logits: FloatArray['B D'],
-      prototypes: FloatArray['N|N//ND D'],
-      k: int,
-  ) -> tuple[FloatArray['B N'], IntArray['B N']]:
-    """Computes similarity to cell codes."""
-    if self.config.shard_prototypes and not self.is_initializing():
-      neg_sim, neg_idx = distributed.distributed_topk(
-          logits,
-          prototypes,
-          k=k,
-          ascending=False,
-          recall_target=self.config.topk_recall_target,
-          final_topk=False,
-      )
-      return neg_sim, neg_idx
-    else:
-      logits = jnp.expand_dims(logits, axis=-2)
-      prototypes = prototypes[None]
-      return misc.compute_similarity(
-          logits,
-          prototypes,
-          normalize=False,
-      )[
-          ..., 0
-      ], jnp.arange(self.num_cells)[None].repeat(logits.shape[0], axis=0)
-
   @nn.compact
   def encode_aerial(
       self,
@@ -387,16 +359,11 @@ class GeoLocalizer(nn.Module):
         if 'pos_sim' in shard_max:
           pos_sim = shard_max['pos_sim']
       else:
-        if self.config.topk and self.config.topk < prototypes.shape[0]:
-          all_sim, all_idx = self.topk_similarities(
-              logits, prototypes, k=self.config.topk
-          )
-        else:
-          all_sim = self.compute_similarity_to_prototypes(logits, prototypes)
-          all_idx = jnp.arange(self.num_cells)[None].repeat(
-              logits.shape[0], axis=0
-          )
-          pos_sim = jnp.take_along_axis(all_sim, pos_idxs[name], axis=-1)
+        all_sim = self.compute_similarity_to_prototypes(logits, prototypes)
+        all_idx = jnp.arange(self.num_cells)[None].repeat(
+            logits.shape[0], axis=0
+        )
+        pos_sim = jnp.take_along_axis(all_sim, pos_idxs[name], axis=-1)
         pred[f'{name}_sim'] = all_sim
 
         valid_negatives = jax.vmap(lambda x, y: ~jnp.isin(x, y) & (x > -1))(
