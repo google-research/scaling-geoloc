@@ -72,16 +72,15 @@ class ResizeImageLike(grain.MapTransform):
     for scene in ['query', 'aerial']:
       if scene not in data:
         continue
-      image_pixels = data[scene]['views']['image_pixels']
-      n, h, w, _ = image_pixels.shape
-
-      for k, v in data[scene]['views'].items():
-        if not isinstance(v, np.ndarray) or np.ndim(v) != 4:
+      image = data[scene]['image']
+      h, w, _ = image.shape
+      for k, v in data[scene].items():
+        if not isinstance(v, np.ndarray) or np.ndim(v) != 3:
           continue
-        if v.shape[-4:-1] == (n, h, w):
-          data[scene]['views'][k] = misc.image_resize_host(
+        if v.shape[:2] == (h, w):
+          data[scene][k] = misc.image_resize_host(
               v,
-              shape=(n, target_h, target_w, v.shape[-1]),
+              shape=(target_h, target_w, v.shape[-1]),
               method='bilinear' if 'image' in k else 'nearest',
               antialias=True,
               jit=False,  # Disable jit to avoid recompilations.
@@ -103,28 +102,26 @@ class CenterCropImageLike(grain.MapTransform):
     for scene in ['query', 'aerial']:
       if scene not in data:
         continue
-      image_pixels = data[scene]['views']['image_pixels']
-      n, h, w, _ = image_pixels.shape
+      image = data[scene]['image']
+      h, w, _ = image.shape
 
       offset_h = int((h - self.crop_size[1]) // 2)
       offset_w = int((w - self.crop_size[0]) // 2)
 
-      for k, v in data[scene]['views'].items():
-        if not isinstance(v, np.ndarray) or np.ndim(v) != 4:
+      for k, v in data[scene].items():
+        if not isinstance(v, np.ndarray) or np.ndim(v) != 3:
           continue
-        if v.shape[-4:-1] == (n, h, w):
+        if v.shape[:2] == (h, w):
           if h >= self.crop_size[1] and w >= self.crop_size[0]:
-            data[scene]['views'][k] = v[
-                :,
+            data[scene][k] = v[
                 offset_h: offset_h + self.crop_size[1],
                 offset_w: offset_w + self.crop_size[0],
                 :,
             ]
           else:
-            data[scene]['views'][k] = misc.image_resize_host(
+            data[scene][k] = misc.image_resize_host(
                 v,
                 shape=(
-                    n,
                     self.crop_size[1],
                     self.crop_size[0],
                     v.shape[-1],
@@ -144,12 +141,11 @@ class ResizeAndPadImageLike(grain.MapTransform):
   def _resize_and_pad(
       self,
       target_size: int,
-      v: FloatArray['N H W C'],
+      v: FloatArray['H W C'],
       k: str,
-      n: int,
       h: int,
       w: int,
-  ) -> FloatArray['N H W C']:
+  ) -> FloatArray['H W C']:
     """Resizes and pads the image."""
 
     # take the longest edge
@@ -163,7 +159,7 @@ class ResizeAndPadImageLike(grain.MapTransform):
     method = 'bilinear' if 'image' in k else 'nearest'
     resized_v = misc.image_resize_host(
         v,
-        shape=(n, new_h, new_w, v.shape[-1]),
+        shape=(new_h, new_w, v.shape[-1]),
         method=method,
         jit=False,
     )
@@ -177,7 +173,6 @@ class ResizeAndPadImageLike(grain.MapTransform):
     pad_right = pad_w - pad_left
 
     pad_width = (
-        (0, 0),
         (pad_top, pad_bottom),
         (pad_left, pad_right),
         (0, 0),
@@ -202,16 +197,16 @@ class ResizeAndPadImageLike(grain.MapTransform):
       if scene not in data:
         continue
 
-      original_image_pixels = data[scene]['views']['image_pixels']
-      n, h, w, _ = original_image_pixels.shape
+      image = data[scene]['image']
+      h, w, _ = image.shape
 
-      for k, v in data[scene]['views'].items():
-        if not isinstance(v, np.ndarray) or np.ndim(v) != 4:
+      for k, v in data[scene].items():
+        if not isinstance(v, np.ndarray) or np.ndim(v) != 3:
           continue
 
-        if v.shape[-4:-1] == (n, h, w):
-          data[scene]['views'][k] = self._resize_and_pad(
-              target_size, v, k, n, h, w
+        if v.shape[:2] == (h, w):
+          data[scene][k] = self._resize_and_pad(
+              target_size, v, k, h, w
           )
 
     return data

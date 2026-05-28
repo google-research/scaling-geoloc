@@ -54,10 +54,7 @@ def get_augment_fn(
 
 def flatten_batch(batch: types.Batch, stride: int | None = None) -> types.Batch:
   """Simplifies a batch by removing unnecessary dimensions."""
-  batch_views = {
-      'image_pixels': batch['query']['image'],
-      **{k: v for k, v in batch['query'].items() if k != 'image'},
-  }
+  batch_views = dict(batch['query'])
   if stride is not None:
     batch_views = {
         k: (
@@ -93,7 +90,7 @@ class GeoLocalizer(nn.Module):
     temperature = self.config.get('temperature', 0.1)
     self.temperature = jnp.array(temperature)
 
-    self.sv_temperature = jnp.array(
+    self.query_temperature = jnp.array(
         self.config.get('cc_temperature', self.config.get('temperature', 0.1))
     )
     self.aerial_temperature = jnp.array(
@@ -152,7 +149,7 @@ class GeoLocalizer(nn.Module):
         'l2_normalize_per_head', False
     )
     logits, tokens = self.backbone.encode_multiview(
-        batch['image_pixels'], *args, **kwargs
+        batch['image'], *args, **kwargs
     )
     return logits, tokens
 
@@ -196,9 +193,7 @@ class GeoLocalizer(nn.Module):
     kwargs['normalize_per_head'] = self.config.get(
         'l2_normalize_per_head', False
     )
-    aerial_pixels = aerial_batch['image_pixels']
-    if aerial_pixels.ndim == 4:  # [B H W C] → [B 1 H W C]
-      aerial_pixels = aerial_pixels[:, None]
+    aerial_pixels = aerial_batch['image']
     logits, tokens = self.aerial_backbone.encode_multiview(
         aerial_pixels, *args, **kwargs
     )
@@ -209,7 +204,7 @@ class GeoLocalizer(nn.Module):
   ) -> tuple[FloatArray['... H W C'], FloatArray['... N G G C']]:
     """Preprocess the image pixels (crop, augment)."""
     batch = flatten_batch(batch, stride=None)
-    image_pixels = batch['image_pixels']
+    image_pixels = batch['image']
     aerial_pixels = batch['aerial']['image']
 
     # Crop to multiple of patch size to avoid boundary effects.
@@ -329,13 +324,13 @@ class GeoLocalizer(nn.Module):
     image_pixels, aerial_pixels = self.get_image_pixels(batch, train)
     batch = flatten_batch(batch, stride=None)
     logits, _ = self.encode_query(
-        {'image_pixels': image_pixels},
+        {'image': image_pixels},
         train=train,
         sow_attention=self.config.get('sow_attention', False) and not train,
     )
 
     aerial_batch = {
-        'image_pixels': aerial_pixels[..., :3],
+        'image': aerial_pixels[..., :3],
     }
     if 'cell_idx' in batch:
       aerial_batch['cell_idxs'] = batch['cell_idx'][:, None]
@@ -345,19 +340,10 @@ class GeoLocalizer(nn.Module):
         sow_attention=self.config.get('sow_attention', False) and not train,
     )
 
-    assert aerial_logits.ndim == 3  # B x N x D
-
-    aerial_logits_p = {
-        'max': lambda x: jnp.max(x, axis=-2),
-        'mean': lambda x: jnp.mean(x, axis=-2),
-    }[self.config.aerial_pooling](
-        aerial_logits
-    )  # B x D
-
     pred = {
         'logits': logits,
         'aerial_logits': aerial_logits,
-        'aerial_logits_p': aerial_logits_p,
+        'aerial_logits': aerial_logits,
         'augmented_pixels': image_pixels,
         'augmented_aerial_pixels': aerial_pixels[..., :3],
     }
@@ -366,13 +352,13 @@ class GeoLocalizer(nn.Module):
     pred['sv_aerial_stochastic_probs'] = self.stochastic_probs(
         logits,
         batch['latlng'],
-        aerial_logits_p,
+        aerial_logits,
         batch['aerial']['latlng'],
         batch,
     )
     # Inverse probability from aerial to all SV in batch.
     aerial_sv_probs = self.stochastic_probs(
-        aerial_logits_p,
+        aerial_logits,
         batch['aerial']['latlng'],
         logits,
         batch['latlng'],
@@ -383,12 +369,12 @@ class GeoLocalizer(nn.Module):
 
     # Compute SV-CC similarity.
     pos_idxs = {
-        'sv': batch['adjacent_cell_idx'],
+        'query': batch['adjacent_cell_idx'],
         'aerial': batch['aerial']['adjacent_cell_idx'],
     }
     all_logits = {
-        'sv': pred['logits'],
-        'aerial': pred['aerial_logits_p'],
+        'query': pred['logits'],
+        'aerial': pred['aerial_logits'],
     }
     for name, logits in all_logits.items():
       cell_codes = self.get_cell_codes(self.cell_code_dim)
@@ -569,7 +555,7 @@ class GeoLocalizerModel(base.BaseModel):
     # Log distance metrics of best cell.
     sv_pred_cc_dist = misc.haversine_distance(
         self.s2cell_centers_ll[batch['cell_idx']],
-        self.s2cell_centers_ll[pred['sv_best_cell_idx']],
+        self.s2cell_centers_ll[pred['query_best_cell_idx']],
     )[..., 0]
 
     metrics = metrics | misc.distance_metrics(sv_pred_cc_dist)
@@ -600,7 +586,7 @@ class GeoLocalizerModel(base.BaseModel):
         pos_sims[name] = stochastic_pred['gt_similarity']
 
       # Add SV Proxy similarities.
-      for name, prefix in {'sv-cc': 'sv', 'a-cc': 'aerial'}.items():
+      for name, prefix in {'sv-cc': 'query', 'a-cc': 'aerial'}.items():
         if self.config.get('multi_similarity_factors', 'all') != 'all':
           if name not in self.config.multi_similarity_factors:
             continue
@@ -613,7 +599,7 @@ class GeoLocalizerModel(base.BaseModel):
         elif proxy_pos == 'frustum':
           gt_idx = batch['frustum_cell_idx']
         elif proxy_pos == 'adjacent':
-          if prefix == 'sv':
+          if prefix == 'query':
             gt_idx = batch['adjacent_cell_idx']
             weights = batch['adjacent_weights']
           elif prefix == 'aerial':

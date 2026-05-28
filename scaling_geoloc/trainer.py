@@ -332,14 +332,14 @@ def resize_batch(
 
   if target_size is not None:
     new_height, new_width = target_size
-    img = batch['query']['views']['image_pixels']
+    img = batch['query']['image']
     target_shape = (
         *img.shape[:-3],
         new_height,
         new_width,
         img.shape[-1],
     )
-    batch['query']['views']['image_pixels'] = jax.image.resize(
+    batch['query']['image'] = jax.image.resize(
         img,
         target_shape,
         method='nearest',

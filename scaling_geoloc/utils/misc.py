@@ -137,22 +137,10 @@ def to_flat_batch(
 ) -> dict[str, jnp.ndarray]:
   """Converts a batch to a flat batch, and optionally crops to multiple."""
   batch = filter_batch_for_jit(batch)
-  batch_views = jax.tree.map(
-      lambda x, y: jnp.concatenate([x, y], axis=1),
-      batch['map']['views'],
-      batch['query']['views'],
-  )
-
+  image = batch['query']['image']
   if stride is not None:
-    batch_views = {
-        k: (
-            crop_to_multiple(v, stride)
-            if (isinstance(v, jnp.ndarray) and v.ndim == 5)
-            else v
-        )
-        for k, v in batch_views.items()
-    }
-  return batch | batch_views
+    image = crop_to_multiple(image, stride) if image.ndim == 3 else image
+  return batch | {'image': image}
 
 
 def token_mask(
@@ -488,19 +476,19 @@ def resize_image_like(
   for scene in ['query', 'map']:
     if scene not in data:
       continue
-    image_pixels = data[scene]['views']['image_pixels']
-    batch_dims = image_pixels.shape[:-3]
-    h, w = image_pixels.shape[-3:-1]
+    image = data[scene]['image']
+    batch_dims = image.shape[:-3]
+    h, w = image.shape[-3:-1]
     hr, wr = int(h * resize_factor), int(w * resize_factor)
 
-    for k, v in data[scene]['views'].items():
+    for k, v in data[scene].items():
       if not isinstance(v, (np.ndarray, jnp.ndarray)):
         continue
-      if v.shape[:-1] == image_pixels.shape[:-1]:
-        data[scene]['views'][k] = jax.image.resize(
+      if v.shape[:-1] == image.shape[:-1]:
+        data[scene][k] = jax.image.resize(
             v,
             shape=batch_dims + (hr, wr, v.shape[-1]),
-            method=('bilinear' if k == 'image_pixels' else 'nearest'),
+            method=('bilinear' if k == 'image' else 'nearest'),
             antialias=antialias,
         )
   return data
