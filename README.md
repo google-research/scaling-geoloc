@@ -27,43 +27,65 @@ Data is organized by location. The root directory is controlled by `config.data.
 ```
 datasets/
   <location>/
-    dataset_info.json
-    train-*.arrayrecord         # paired (query image, aerial image, latlng), training
-    val-*.arrayrecord           # paired, validation
     query/
       dataset_info.json
-      test-*.arrayrecord        # ground-view images + latlng, test queries
+      train-*.arrayrecord       # ground-view images, training
+      val-*.arrayrecord
+      test-*.arrayrecord        # test queries
     aerial/
       dataset_info.json
-      test-*.arrayrecord        # aerial tile images + latlng, test database
-    index_level15/              # precomputed S2 cell assignments at level 15
-      dataset_info.json
-      train-*.arrayrecord       # cell_idx + adjacent_cell_idx per train example
+      train-*.arrayrecord       # aerial tile images, training
       val-*.arrayrecord
+      test-*.arrayrecord        # test database
+    index_level15/              # precomputed S2 cell assignments at level 15
       query/
         dataset_info.json
+        train-*.arrayrecord
+        val-*.arrayrecord
         test-*.arrayrecord
       aerial/
         dataset_info.json
+        train-*.arrayrecord
+        val-*.arrayrecord
         test-*.arrayrecord
       metadata.npz              # cell_centers_latlng: float32 [N_cells, 2]
 ```
 
-Multiple `index_level<N>/` directories can coexist to experiment with different cell resolutions. The active index is set via `config.data.index_subdir` (default: `index_level15`).
+Images and cell index are stored separately so multiple `index_level<N>/` directories can coexist without duplicating image data. The active index is set via `config.data.index_subdir` (default: `index_level15`).
 
-### Per-example fields
+### Shard specs
 
-Each example exposes the following fields after loading through `JoinedDataSource`:
+**`query/` and `aerial/` shards** store images and positions:
+```
+{'image': uint8 [H, W, 3], 'latlng': float32 [2]}
+```
+
+**`index_level<N>/query/` and `index_level<N>/aerial/` shards** store cell assignments:
+```
+{
+  'cell_idx': int32,
+  'query':  {'adjacent_cell_idx': int32 [4], 'adjacent_weights': float32 [4]},
+  'aerial': {'adjacent_cell_idx': int32 [4], 'adjacent_weights': float32 [4]},
+}
+```
+
+**`metadata.npz`** contains `cell_centers_latlng: float32 [N_cells, 2]` — lat/lng of each cell centre.
+
+### Per-example fields after joining
+
+`JoinedDataSource` merges all four sources into a single example per index:
 
 | Field | Shape | Description |
 |---|---|---|
 | `query/image` | `uint8 [H, W, 3]` | Ground-view image |
 | `query/latlng` | `float32 [2]` | Ground-truth lat/lng |
+| `query/adjacent_cell_idx` | `int32 [4]` | Neighbouring cell indices |
+| `query/adjacent_weights` | `float32 [4]` | Bilinear interpolation weights |
 | `aerial/image` | `uint8 [H, W, 3]` | Aerial tile image |
 | `aerial/latlng` | `float32 [2]` | Aerial tile lat/lng |
+| `aerial/adjacent_cell_idx` | `int32 [4]` | Neighbouring cell indices |
+| `aerial/adjacent_weights` | `float32 [4]` | Bilinear interpolation weights |
 | `cell_idx` | `int32` | S2 cell index of the query |
-| `adjacent_cell_idx` | `int32 [4]` | Neighbouring cell indices (bilinear interpolation) |
-| `adjacent_weights` | `float32 [4]` | Interpolation weights for adjacent cells |
 
 ---
 
