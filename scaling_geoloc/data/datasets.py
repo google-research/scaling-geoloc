@@ -37,16 +37,23 @@ from scaling_geoloc.utils import distributed
 
 
 def transformations_from_config(
-    data_config: ml_collections.ConfigDict,
+    pp: ml_collections.ConfigDict,
     meta_data: types.DataDict | None = None,
 ) -> tuple[grain.Transformations, types.DataDict]:
-  """Builds the transformations from the dataset config."""
-  # Assumes TrainExampleSpec.
+  """Builds the transformations from the preprocess config."""
   transformations = [
       dtr.MaybeCollate(),
       dtr.NormalizePixels(),
   ]
-  if data_config.filter_invalid_cells:
+  if pp.size is not None:
+    size = tuple(pp.size)
+    if pp.method == 'stretch':
+      transformations.append(dtr.ResizeImageLike(final_size=size))
+    elif pp.method == 'crop':
+      transformations.append(dtr.CenterCropImageLike(crop_size=size))
+    elif pp.method == 'pad':
+      transformations.append(dtr.ResizeAndPadImageLike(crop_size=size))
+  if pp.filter_invalid_cells:
     transformations.append(dtr.FilterInvalidCells())
   return transformations, meta_data
 
@@ -152,6 +159,31 @@ def build_data_loader(
       worker_count=worker_count,
       read_options=read_options,
       worker_buffer_size=worker_buffer_size,
+  )
+
+
+def build_eval_data_loader(
+    source: grain.RandomAccessDataSource,
+    data_config: ml_collections.ConfigDict,
+    batch_size: int,
+    transformations: grain.Transformations = (),
+    shard_options: grain.ShardOptions = grain.NoSharding(),
+    drop_remainder: bool = False,
+) -> grain.DataLoader:
+  """Builds an eval data loader using grain settings from data_config."""
+  return build_data_loader(
+      source,
+      num_epochs=1,
+      shuffle=False,
+      drop_remainder=drop_remainder,
+      shard_options=shard_options,
+      transformations=transformations,
+      batch_size=batch_size,
+      worker_count=data_config.grain_num_workers_valid,
+      read_options=grain.ReadOptions(
+          prefetch_buffer_size=data_config.grain_prefetch_buffer_size,
+          num_threads=data_config.grain_num_threads_valid,
+      ),
   )
 
 
@@ -299,7 +331,7 @@ def build_dataset(
 ) -> types.Dataset:
   """Create a dataset from config."""
   transformations, meta_data = transformations_from_config(
-      dataset_config, meta_data
+      dataset_config.preprocess, meta_data
   )
   return create_dataset(
       dataset_config,

@@ -35,13 +35,15 @@ from scaling_geoloc.data.joined_data_source import JoinedDataSource
 from scaling_geoloc.evals import base_eval
 from scaling_geoloc.utils import distributed as distributed_utils
 from scaling_geoloc.utils import geo
-from scaling_geoloc.utils import image as image_utils
+from scaling_geoloc.configs import defaults
 
 
 def build_index(
     representation_fn: Callable[[dict], np.ndarray],
     data_source,
+    data_config: ml_collections.ConfigDict,
     batch_size: int,
+    transformations: grain.Transformations = (),
 ) -> dict[str, np.ndarray]:
   """Encodes this process's shard of a data source.
 
@@ -51,10 +53,11 @@ def build_index(
   (e.g. for replicated databases) must gather separately.
 
   Args:
-    representation_fn: Callable that takes a raw batch dict (with uint8
-      'image' and float32 'latlng') and returns float32 embeddings [B, D].
+    representation_fn: Callable that takes a batch dict with float32 'image'
+      [B,H,W,3] and returns float32 embeddings [B, D].
     data_source: grain.RandomAccessDataSource yielding dicts with at least
       'image' (uint8 [H,W,3]) and 'latlng' (float32 [2]).
+    data_config: Data config supplying grain worker/thread settings.
     batch_size: Number of items per batch.
 
   Returns:
@@ -67,13 +70,12 @@ def build_index(
       if n_processes > 1
       else grain.NoSharding()
   )
-  loader = datasets.build_data_loader(
+  loader = datasets.build_eval_data_loader(
       IndexedDataSource(data_source),
+      data_config,
       batch_size=batch_size,
-      num_epochs=1,
-      shuffle=False,
-      drop_remainder=False,
       shard_options=shard_options,
+      transformations=transformations,
   )
   accumulated = collections.defaultdict(list)
   for batch in loader:
@@ -87,12 +89,14 @@ def evaluate_retrieval(
     query: dict[str, np.ndarray],
     db: dict[str, np.ndarray],
     ks: tuple[int, ...] = (1, 5, 20, 100),
+    query_batch_size: int | None = None,
 ) -> tuple[dict[str, np.ndarray], dict[str, float]]:
   """Exact distributed retrieval metrics using a globally-sharded database.
 
   The database stays sharded on-device across all processes/devices.  Inside
   pmap, distributed_topk all-gathers queries to every device, each device
   searches its db shard, and all_to_all reassembles the global top-k.
+  Queries are processed in batches of query_batch_size to bound memory usage.
   Results are all_gathered inside pmap so every process returns identical
   per-query results and global summaries.
 
@@ -103,6 +107,8 @@ def evaluate_retrieval(
     db: Dict from build_index (or prototype db) — must contain 'embs'
       [N_local, D] and 'latlng' [N_local, 2].
     ks: Top-k values to evaluate.
+    query_batch_size: Number of queries per batch (across all local devices).
+      Defaults to processing all queries at once.
 
   Returns:
     Tuple of (per_query, summaries):
@@ -112,18 +118,15 @@ def evaluate_retrieval(
       summaries: scalar means over all queries.
   """
   n_local_devices = jax.local_device_count()
+  q_total = query['embs'].shape[0]
 
-  def _pad_to_multiple(d):
-    n = d['embs'].shape[0]
-    pad = (-n) % n_local_devices
-    if pad:
-      logging.info('Padding %d items to align to %d devices.', pad, n_local_devices)
-      d = {k: np.concatenate([v, np.zeros_like(v[:pad])], axis=0) for k, v in d.items()}
-    valid = np.array([True] * n + [False] * pad)
-    return d, valid, n
-
-  query, _, q_size = _pad_to_multiple(query)
-  db, db_valid, _ = _pad_to_multiple(db)
+  # Pad db to device multiple; stays fixed across all query batches.
+  db_n = db['embs'].shape[0]
+  db_pad = (-db_n) % n_local_devices
+  if db_pad:
+    logging.info('Padding db by %d to align to %d devices.', db_pad, n_local_devices)
+    db = {k: np.concatenate([v, np.zeros_like(v[:db_pad])], axis=0) for k, v in db.items()}
+  db_valid = np.array([True] * db_n + [False] * db_pad)
   db = {**db, 'valid': db_valid}
 
   # k must not exceed the per-device db shard size (jax.lax.top_k constraint).
@@ -134,6 +137,8 @@ def evaluate_retrieval(
   def _pmap_shard(x):
     sharded = dataset_utils.shard(x)
     return jax.device_put(sharded, distributed_utils.default_pmap_sharding(sharded.shape))
+
+  db_sharded = jax.tree.map(_pmap_shard, db)
 
   def retrieve_step(q, db):
     _, topk_idx = distributed_utils.distributed_topk(
@@ -152,21 +157,36 @@ def evaluate_retrieval(
     )
 
   pmapped = jax.pmap(retrieve_step, axis_name='batch', donate_argnums=(0,))
-  topk_idx, topk_dist, topk_db_dataset_index = jax.tree.map(
-      lambda x: jax.device_get(x)[0],  # all devices hold the same; take [0]
-      pmapped(
-          jax.tree.map(dataset_utils.shard, query),
-          jax.tree.map(_pmap_shard, db),
-      ),
-  )
 
-  # Slice back to original query size, discarding padded rows.
-  topk_idx = topk_idx[:q_size]
-  topk_dist = topk_dist[:q_size]
-  topk_db_dataset_index = topk_db_dataset_index[:q_size]
+  # Determine fixed batch size (pad every batch to this to avoid recompilation).
+  batch_size = query_batch_size if query_batch_size is not None else q_total
+  batch_size = max(batch_size, n_local_devices)
+  batch_size = (batch_size + n_local_devices - 1) // n_local_devices * n_local_devices
+
+  accumulated_topk = collections.defaultdict(list)
+  for start in range(0, q_total, batch_size):
+    q_batch = {k: v[start: start + batch_size] for k, v in query.items()}
+    q_n = q_batch['embs'].shape[0]
+    # Pad to fixed batch_size so pmap shape stays constant (no recompilation).
+    if q_n < batch_size:
+      q_batch = {
+          k: np.concatenate([v, np.zeros_like(v[:batch_size - q_n])], axis=0)
+          for k, v in q_batch.items()
+      }
+    topk_idx, topk_dist, topk_db_idx = jax.tree.map(
+        lambda x: jax.device_get(x)[0],
+        pmapped(jax.tree.map(dataset_utils.shard, q_batch), db_sharded),
+    )
+    accumulated_topk['topk_idx'].append(topk_idx[:q_n])
+    accumulated_topk['topk_dist'].append(topk_dist[:q_n])
+    accumulated_topk['topk_dataset_index'].append(topk_db_idx[:q_n])
+
+  topk_idx = np.concatenate(accumulated_topk['topk_idx'], axis=0)
+  topk_dist = np.concatenate(accumulated_topk['topk_dist'], axis=0)
+  topk_db_dataset_index = np.concatenate(accumulated_topk['topk_dataset_index'], axis=0)
 
   per_query: dict[str, np.ndarray] = {
-      **{k: query[k][:q_size] for k in ('latlng', 'dataset_index', 'cell_idx') if k in query},
+      **{k: query[k][:q_total] for k in ('latlng', 'dataset_index', 'cell_idx') if k in query},
       'topk_idx': topk_idx,
       'topk_dist': topk_dist,
       'topk_dataset_index': topk_db_dataset_index,
@@ -216,8 +236,8 @@ def _make_encode_fn(
 
   def fn(batch: dict) -> np.ndarray:
     b = batch['image'].shape[0]
-    model_batch = {**batch, 'image': image_utils.byte_to_float(batch['image'])}
     pad = (-b) % n_devices
+    model_batch = batch
     if pad:
       model_batch = jax.tree.map(
           lambda x: np.concatenate([x, x[:pad]], axis=0), model_batch
@@ -279,10 +299,11 @@ class RetrievalEval(base_eval.BaseEval):
       train_state: train_utils.TrainState,
       split: str,
       batch_size: int,
+      transformations: grain.Transformations = (),
   ) -> dict[str, np.ndarray] | None:
     """Builds the per-process database shard for the configured task."""
     cfg = self.config
-    index_dir = os.path.join(cfg.data_dir, cfg.index_subdir)
+    index_dir = os.path.join(cfg.data.data_dir, cfg.data.index_subdir)
     aerial_db = None
 
     if cfg.task in ('cross_view', 'hybrid'):
@@ -292,8 +313,10 @@ class RetrievalEval(base_eval.BaseEval):
       )
       aerial_db = build_index(
           encode_aerial,
-          _make_data_source(cfg.data_dir, index_dir, split, 'aerial'),
+          _make_data_source(cfg.data.data_dir, index_dir, cfg.db_split, 'aerial'),
+          cfg.data,
           batch_size,
+          transformations=transformations,
       )
       logging.info('Aerial DB: %d items, dim %d', *aerial_db['embs'].shape)
 
@@ -324,7 +347,10 @@ class RetrievalEval(base_eval.BaseEval):
     split = cfg.split
     ks = tuple(cfg.k_values)
     batch_size = cfg.batch_size
-    index_dir = os.path.join(cfg.data_dir, cfg.index_subdir)
+    index_dir = os.path.join(cfg.data.data_dir, cfg.data.index_subdir)
+
+    query_transforms, _ = datasets.transformations_from_config(cfg.data.preprocess)
+    db_transforms, _ = datasets.transformations_from_config(cfg.data.db_preprocess)
 
     self.write_note('Building query index...')
     encode_query = _make_encode_fn(
@@ -333,19 +359,24 @@ class RetrievalEval(base_eval.BaseEval):
     )
     query_index = build_index(
         encode_query,
-        _make_data_source(cfg.data_dir, index_dir, split, 'query'),
+        _make_data_source(cfg.data.data_dir, index_dir, split, 'query'),
+        cfg.data,
         batch_size,
+        transformations=query_transforms,
     )
     logging.info('Query index: %d items, dim %d', *query_index['embs'].shape)
 
     self.write_note(f'Building {cfg.task} database...')
-    db = self._build_db(train_state, split, batch_size)
+    db = self._build_db(train_state, split, batch_size, db_transforms)
     if db is None:
       logging.error('No database available for task %s.', cfg.task)
       return {}, {}, {}
 
     self.write_note('Computing retrieval metrics...')
-    per_query, summaries = evaluate_retrieval(query_index, db, ks=ks)
+    per_query, summaries = evaluate_retrieval(
+        query_index, db, ks=ks,
+        query_batch_size=cfg.eval_batch_size or batch_size,
+    )
     logging.info('Retrieval summaries:\n%s', summaries)
 
     if writer is not None:
@@ -358,11 +389,15 @@ class RetrievalEval(base_eval.BaseEval):
     config.task = 'cross_view'  # 'cross_view' | 'classification' | 'hybrid'
     config.split = 'test'
     config.k_values = (1, 5, 20, 100)
-    config.data_dir = ml_collections.config_dict.placeholder(str)
-    config.index_subdir = 'index_level17'
     config.encode_query_method = 'encode_query'
     config.encode_aerial_method = 'encode_aerial'
     config.build_prototype_db_method = 'build_prototype_database'
     config.mutable_collections = ('batch_stats',)
     config.kappa = 1.0
+    config.eval_batch_size = None  # None: use same batch_size as build_index
+    config.db_split = 'train'
+    config.data = defaults.data('').unlock()
+    config.data.preprocess.filter_invalid_cells = False
+    config.data.db_preprocess = defaults.preprocess().unlock()
+    config.data.db_preprocess.filter_invalid_cells = False
     return config

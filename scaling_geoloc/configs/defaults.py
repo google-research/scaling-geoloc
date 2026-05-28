@@ -136,6 +136,16 @@ def base_retrieval(location: str, total_steps: int = 100_000) -> config_dict.Con
   return config.lock()
 
 
+def preprocess() -> config_dict.ConfigDict:
+  return config_dict.ConfigDict(
+      dict(
+          filter_invalid_cells=True,
+          size=None,    # (h, w) or None to disable resizing
+          method=None,  # 'stretch' | 'crop' | 'pad' | None
+      )
+  ).lock()
+
+
 def data(location: str) -> config_dict.ConfigDict:
   return config_dict.ConfigDict(
       dict(
@@ -152,8 +162,7 @@ def data(location: str) -> config_dict.ConfigDict:
           grain_num_threads=16,
           grain_num_threads_valid=8,
           grain_prefetch_buffer_size=1,  # no prefetching
-          filter_invalid_cells=True,
-          preprocess=dict(),
+          preprocess=preprocess(),
       )
   ).lock()
 
