@@ -128,7 +128,7 @@ class GeoLocalizer(nn.Module):
     """Interface to backbone encoder."""
     kwargs['normalize'] = self.config.l2_normalize
     kwargs['normalize_per_head'] = self.config.l2_normalize_per_head
-    emb, tokens = self.backbone.encode_multiview(
+    emb, tokens = self.backbone.encode_images(
         batch['image'], *args, **kwargs
     )
     return emb, tokens
@@ -144,7 +144,7 @@ class GeoLocalizer(nn.Module):
     kwargs['normalize'] = self.config.l2_normalize
     kwargs['normalize_per_head'] = self.config.l2_normalize_per_head
     aerial_pixels = aerial_batch['image']
-    emb, tokens = self.aerial_backbone.encode_multiview(
+    emb, tokens = self.aerial_backbone.encode_images(
         aerial_pixels, *args, **kwargs
     )
     return emb, tokens

@@ -590,7 +590,7 @@ class ViTBackbone(nn.Module):
     return start_index, end_index
 
   @nn.compact
-  def encode_multiview(
+  def encode_images(
       self,
       x: jt.Float[jt.Array, '... H W 3'],
       *,
@@ -648,86 +648,6 @@ class ViTBackbone(nn.Module):
       if normalize:
         emb = misc.l2_normalize(emb)
     return emb, backbone_output
-
-  @nn.compact
-  def encode_masked(
-      self,
-      x: jt.Float[jt.Array, '... H W 3'],
-      mask: float | jt.Int[jt.Array, '... L'],
-      *,
-      train: bool,
-      debug: bool = False,
-      mask_mode: str = 'pad_token',
-      pooling: None | str = None,
-      sow_attention: bool = False,
-      extra_tokens: jt.Float[jt.Array, '... M C'] | None = None,
-      normalize: bool = False,  # embeddings
-      normalize_per_head: bool = False,  # embeddings
-  ) -> tuple[
-      jt.Float[jt.Array, '... D'],
-      jt.Float[jt.Array, '... L+1 D'],
-      jt.Bool[jt.Array, '... L 1'],
-  ]:
-    bs = x.shape[:-3]
-    x_flat = jax.lax.collapse(x, 0, -3)
-    bf, h, w, _ = x_flat.shape
-    ph, pw = self.patches.size
-    nh, nw = h // ph, w // pw
-    num_tokens = nh * nw
-    if isinstance(mask, float):
-      num_masked = int(num_tokens * mask)
-      to_encode, _ = misc.shuffle_and_partition(
-          n_batch=bf,
-          n_tokens=num_tokens,
-          n_masked=num_masked,
-          rng=self.make_rng('masking_rng'),
-      )
-    else:
-      to_encode = mask
-
-    if extra_tokens is not None:
-      extra_tokens = jax.lax.collapse(extra_tokens, 0, -2)
-
-    emb, x = self(
-        x_flat,
-        train=train,
-        mask=to_encode,
-        mask_mode='ignore',
-        debug=debug,
-        pooling=pooling,
-        sow_attention=sow_attention,
-        extra_tokens=extra_tokens,
-        normalize=normalize,
-        normalize_per_head=normalize_per_head,
-    )
-
-    assert self.head != 'fervers'
-
-    if mask_mode == 'ignore':
-      ret = (emb, x, to_encode)
-    elif mask_mode == 'pad_token':
-      is_masked = ~misc.indices_to_mask(to_encode, num_tokens)
-      x_cls, x_patch = x[..., :1, :], x[..., 1:, :]
-
-      x_unrolled = jnp.zeros(
-          (bf, num_tokens) + x_patch.shape[-1:], dtype=x_patch.dtype
-      )
-      shared_mask_token = self.param(
-          'shared_mask_token',
-          nn.initializers.normal(stddev=0.02),
-          x_patch.shape[-1:],
-      )
-      x_unrolled = x_unrolled + shared_mask_token
-      all_rows = jnp.arange(bf).reshape(bf, 1)
-      x_unrolled = x_unrolled.at[all_rows, to_encode].set(
-          jax.lax.collapse(x_patch, 0, -2)
-      )
-      x_unrolled = jnp.concatenate([x_cls, x_unrolled], axis=-2)
-      ret = (emb, x_unrolled, is_masked[..., None])
-    else:
-      raise ValueError(f'Unknown mask mode {mask_mode}')
-    out = [x.reshape(*bs, *x.shape[1:]) for x in ret]
-    return tuple(out)
 
   def output_dim(self) -> int:
     """Returns the output dimension of the embeddings."""

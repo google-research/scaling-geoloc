@@ -435,9 +435,9 @@ def geo_localizer() -> ml_collections.ConfigDict:
   config.crop = 'none'
   config.crop_size = (224, 224)
   config.shard_prototypes = False
+  config.store_half_precision = False
   config.l2_normalize = False
   config.l2_normalize_per_head = False
-  config.topk_recall_target = None
   config.do_augment = False
   config.do_padding_augment = False
   config.do_stretching_augment = False
@@ -445,7 +445,6 @@ def geo_localizer() -> ml_collections.ConfigDict:
   config.detach_query_prototypes = False
   config.detach_aerial_prototypes = False
   config.masked_expsum = None
-  config.topk = None
   config.filter_by_distance = False
   config.same_cell_threshold = 200.0
   # multi-similarity loss hyperparameters
@@ -454,9 +453,6 @@ def geo_localizer() -> ml_collections.ConfigDict:
   config.multi_similarity_base = 0.2
   config.multi_similarity_margin = 0.0
   config.multi_similarity_factors = 'all'
-  config.multi_similarity_mean_pos_sim = False
-  config.query_multi_similarity_proxy_positives = None
-  config.aerial_multi_similarity_proxy_positives = None
   return config
 
 

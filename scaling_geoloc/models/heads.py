@@ -82,7 +82,7 @@ def backbone_head(
         name='output_projection',
     )(backbone_output)
   elif head == 'fervers':
-    pass  # Aggregate in encode_multiview.
+    pass  # Aggregate in encode_images.
   elif head.startswith('salad'):
     salad = SALAD.default(
         head_output_dim,
