@@ -75,12 +75,12 @@ def base() -> ml_collections.ConfigDict:
   ).lock()
 
 
-def base_retrieval(dirname: str, total_steps: int = 100_000) -> config_dict.ConfigDict:
+def base_retrieval(location: str, total_steps: int = 100_000) -> config_dict.ConfigDict:
   """Base config for retrieval models."""
   config = base().unlock()
 
   # Data configs.
-  config.data = data(dirname).unlock()
+  config.data = data(location).unlock()
   config.data.grain_num_threads = 16
   config.data.grain_num_threads_valid = 8
   config.data.grain_num_workers = 16
@@ -136,12 +136,13 @@ def base_retrieval(dirname: str, total_steps: int = 100_000) -> config_dict.Conf
   return config.lock()
 
 
-def data(dirname: str) -> config_dict.ConfigDict:
+def data(location: str) -> config_dict.ConfigDict:
   return config_dict.ConfigDict(
       dict(
           version=config_dict.placeholder(str),
           data_dir=DATA_DIR,
-          dirname=dirname,
+          location=location,
+          index_subdir='index_level17',
           train_split='train',
           valid_split='valid',
           shuffle_train=True,
@@ -151,6 +152,7 @@ def data(dirname: str) -> config_dict.ConfigDict:
           grain_num_threads=16,
           grain_num_threads_valid=8,
           grain_prefetch_buffer_size=1,  # no prefetching
+          filter_invalid_cells=True,
           preprocess=dict(),
       )
   ).lock()
@@ -328,7 +330,7 @@ def eval_base(batch_size: int) -> ml_collections.ConfigDict:
   return config
 
 
-def retrieval(dirname: str, batch_size: int) -> ml_collections.ConfigDict:
+def retrieval(location: str, batch_size: int) -> ml_collections.ConfigDict:
   """Config for retrieval."""
   config = eval_base(batch_size)
   config.eval_name = 'retrieval'
@@ -339,7 +341,7 @@ def retrieval(dirname: str, batch_size: int) -> ml_collections.ConfigDict:
   config.valid_distance_threshold = 100.0  # meters
   config.topk_recall_target = None
 
-  config.data = data(dirname).unlock()
+  config.data = data(location).unlock()
   config.data.shuffle_valid = True
   config.data.shuffle_train = False
   config.data.train_split = 'valid'
@@ -358,17 +360,16 @@ def cross_view_retrieval(
     join_normalize: bool = False,
 ) -> config_dict.ConfigDict:
   """Returns a config for cross-view retrieval."""
-  config = retrieval(batch_size)
+  query_location, query_split = query
+  database_location, database_split = database
+  config = retrieval(query_location, batch_size)
   config.data.grain_num_workers_valid = num_workers
   config.data.grain_num_workers = num_workers
   config.method = 'encode_query'
   config.method_db = 'encode_aerial'
-  query_dirname, query_split = query
-  database_dirname, database_split = database
-  config.data.dirname = query_dirname
   config.data.train_split = config.data.valid_split = query_split
   config.db_data = config_dict.ConfigDict()
-  config.db_data.dirname = database_dirname
+  config.db_data.location = database_location
   config.db_data.train_split = config.db_data.valid_split = database_split
   config.plot = True
   config.db_data.preprocess = config_dict.ConfigDict()
@@ -390,16 +391,15 @@ def vpr_retrieval(
     join_factor: float = -1.0,  # Do not join databases.
 ) -> config_dict.ConfigDict:
   """Returns a config for IBR retrieval."""
-  config = retrieval(batch_size)
+  query_location, query_split = query
+  database_location, database_split = database
+  config = retrieval(query_location, batch_size)
   config.data.grain_num_workers_valid = num_workers
   config.data.grain_num_workers = num_workers
   config.method = 'encode_query'
-  query_dirname, query_split = query
-  database_dirname, database_split = database
-  config.data.dirname = query_dirname
   config.data.train_split = config.data.valid_split = query_split
   config.db_data = config_dict.ConfigDict()
-  config.db_data.dirname = database_dirname
+  config.db_data.location = database_location
   config.db_data.train_split = config.db_data.valid_split = database_split
   config.plot = True
 
@@ -413,16 +413,15 @@ def vpr_retrieval(
 def cell_code_retrieval(
     batch_size: int,
     num_workers: int,
-    dirname: str,
+    location: str,
     split: str,
 ) -> config_dict.ConfigDict:
   """Returns a config for cell code retrieval."""
-  config = retrieval(batch_size)
+  config = retrieval(location, batch_size)
   config.data.grain_num_workers_valid = num_workers
   config.data.grain_num_workers = num_workers
   config.method = 'encode_query'
   config.db_from_model = 'build_s2cell_database'
-  config.data.dirname = dirname
   config.data.train_split = config.data.valid_split = split
   return config
 

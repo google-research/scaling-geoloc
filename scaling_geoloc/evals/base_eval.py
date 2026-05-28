@@ -21,9 +21,9 @@ import ml_collections
 from scenic.train_lib import pretrain_utils as scenic_pretrain_utils
 from scenic.train_lib import train_utils
 
-from scaling_geoloc.scenic import types
-from scaling_geoloc.scenic.configs import defaults
-from scaling_geoloc.scenic.models import base
+from scaling_geoloc import types
+from scaling_geoloc.configs import defaults
+from scaling_geoloc.models import base
 
 
 class BaseEval:

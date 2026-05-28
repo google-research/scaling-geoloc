@@ -604,3 +604,26 @@ class GeoLocalizerModel(base.BaseModel):
       )
     else:
       return jax.lax.pmean(grad, axis_name='batch')
+
+  def get_prototypes(
+      self,
+      train_state: train_utils.TrainState,  # replicated
+  ) -> FloatArray['N D']:
+    return jax.pmap(
+        self.inference_fn('get_prototypes'),
+        axis_name='batch',
+        static_broadcasted_argnums=(1,),
+    )(train_state, self.config.prototype_dim)
+
+  def build_prototype_database(
+      self,
+      train_state: train_utils.TrainState,  # replicated
+  ) -> dict[str, Any]:
+    n = len(self.dataset_meta_data['cell_centers_ll'])
+    s2cell_database = {
+        'embs': distributed.gather_globally_safe(self.get_prototypes(train_state)),
+        'latlng': self.dataset_meta_data['cell_centers_ll'],
+        'dataset_index': np.arange(n),
+        'cell_idx': np.arange(n),
+    }
+    return s2cell_database
