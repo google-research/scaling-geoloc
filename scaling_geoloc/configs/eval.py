@@ -26,19 +26,23 @@ from scaling_geoloc.configs import defaults
 
 
 LOCATION = ml_collections.config_dict.placeholder(str)
-BATCH_SIZE = 128
+BATCH_SIZE_PER_DEVICE = 128
 
 
 def get_config() -> ml_collections.ConfigDict:
   config = ml_collections.ConfigDict()
   config.rng_seed = 42
+  config.device_count = 1  # Automatically set in eval.py.
 
   # Checkpoint path. The eval script loads model config, weights, and
   # dataset_meta_data from here via trainer.reload_experiment.
   config.experiment = ml_collections.config_dict.placeholder(str)
 
   def _retrieval(task):
-    cfg = defaults.retrieval_eval(LOCATION, BATCH_SIZE).unlock()
+    cfg = defaults.retrieval_eval(LOCATION, BATCH_SIZE_PER_DEVICE).unlock()
+    cfg.batch_size_per_device = BATCH_SIZE_PER_DEVICE
+    cfg.batch_size = cfg.get_ref('batch_size_per_device') * config.get_ref('device_count')
+    cfg.batch_size_eval = cfg.get_ref('batch_size')
     cfg.task = task
     cfg.db_split = 'train'
     return cfg

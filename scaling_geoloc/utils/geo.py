@@ -318,7 +318,7 @@ def distance_metrics(
       25_000, 50_000, 100_000, 200_000, 500_000, 750_000, 1_000_000,
   ]
   key_to_threshold = {
-      f'{prefix}within_{t if t < 1000 else t // 1000}{"m" if t < 1000 else "km"}': t
+      f'{prefix}@{t if t < 1000 else t // 1000}{"m" if t < 1000 else "km"}': t
       for t in thresholds
   }
   metrics = {f'{prefix}distance_to_gt': distance_to_gt}

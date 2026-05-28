@@ -471,7 +471,7 @@ class GeoLocalizerModel(base.BaseModel):
         self.s2cell_centers_ll[pred['query_best_cell_idx']],
     )[..., 0]
 
-    metrics = metrics | geo.distance_metrics(query_pred_p_dist)
+    metrics = metrics | geo.distance_metrics(query_pred_p_dist, prefix='query_recall')
     if 'query_aerial_p_multi_similarity' in self.config.compose_loss:
       ms_loss = misc.MultiSimilarityLoss(
           alpha=self.config.multi_similarity_alpha,

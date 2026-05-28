@@ -17,10 +17,10 @@
 
 import jax.numpy as jnp
 import numpy as np
-import s2
-from scaling_geoloc import types
-from scaling_geoloc.utils import geo
-from etils.array_types import FloatArray, BoolArray
+from etils.array_types import FloatArray
+from typing import Callable
+from scaling_geoloc.utils import misc
+import jax
 
 
 def bbox_norm(
@@ -38,33 +38,6 @@ def bbox_norm(
   if center:
     points_norm = (points_norm - 0.5) * 2.0
   return points_norm
-
-
-def bbox_norm_categorical_time(
-    s2cell: str,
-    points: FloatArray['N d'],
-    spatial_margin_fraction: float | None = None,  # Range [0, 1].
-) -> tuple[FloatArray['N d'], BoolArray['N'] | None]:
-  """Returns bbox norm, but makes time dimension categorical."""
-  run_ids = np.unique(points[:, 0], return_inverse=True)[1]
-  # Start with a random run id.
-  run_ids = 1 + run_ids[..., None]
-  # Normalize x, y coordinates (meters) in s2cell by the edge length.
-  edge_length = types.CELL_EXTENTS[
-      s2.S2CellId.from_token(s2cell.encode('utf-8')).level
-  ]
-  xy = geo.transform_points(
-      np.linalg.inv(geo.ecef_t_s2cell(s2cell, 0.0)), points[..., 1:]
-  )[:, :2]
-  points = np.concatenate([run_ids, xy], axis=-1)
-  if spatial_margin_fraction is not None:
-    # Remove points that are close to the edge of the s2cell bounding box.
-    mask = (np.abs(xy) < (1 - spatial_margin_fraction) * edge_length / 2).all(
-        axis=-1
-    )
-  else:
-    mask = None
-  return points, mask
 
 
 def spatio_temporal_residuals(
@@ -88,7 +61,6 @@ def spatio_temporal_residuals(
   )
 
 
-
 # Source: third_party/py/big_vision/models/xp/fmr3d/pct.py
 def farthest_point_sampling(
     pointcloud: jnp.ndarray,
@@ -96,7 +68,7 @@ def farthest_point_sampling(
     pc_mask: jnp.ndarray | None = None,
     closest_first: bool = False,
     rng: jnp.ndarray | int | None = None,
-    residuals_fn: Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray] = l2_norm,
+    residuals_fn: Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray] = misc.l2_norm,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
   """Gets k farthest points for each example.
 

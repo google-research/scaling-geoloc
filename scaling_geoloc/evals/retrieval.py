@@ -200,7 +200,7 @@ def evaluate_retrieval(
         summaries[f'distance@{k}'] = float(np.mean(val))
         per_query[f'distance@{k}'] = np.asarray(val)
       else:
-        threshold = key.removeprefix('within_')
+        threshold = key.removeprefix('@')
         summaries[f'recall@{k}@{threshold}'] = float(np.mean(val))
         per_query[f'recall@{k}@{threshold}'] = np.asarray(val)
 
