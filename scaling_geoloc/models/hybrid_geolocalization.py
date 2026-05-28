@@ -240,12 +240,13 @@ class GeoLocalizer(nn.Module):
       target_logits: FloatArray['B D'],
       target_latlngs: FloatArray['B 2'],
       batch: types.Batch,
-      axis_name: str = 'batch',
+      axis_name: str | None = 'batch',
       target_name: str = 'aerial',
   ) -> types.Predictions:
     """Compute similarity between SV and aerial logits within batch (training)."""
     batch_size = logits.shape[0]
-    if not self.is_initializing():
+    distributed = axis_name is not None and not self.is_initializing()
+    if distributed:
       target_logits_in_batch = jax.lax.all_gather(
           target_logits, axis_name=axis_name, tiled=True
       )  # NB x D
@@ -254,16 +255,16 @@ class GeoLocalizer(nn.Module):
 
     cell_idx = jnp.asarray(batch['cell_idx'])
     cell_centers_ll = jnp.asarray(target_latlngs)
-    if self.is_initializing():
-      all_cell_idx_in_batch = cell_idx
-      all_cell_centers_ll_in_batch = cell_centers_ll
-    else:
+    if distributed:
       all_cell_idx_in_batch = jax.lax.all_gather(
           cell_idx, axis_name=axis_name, tiled=True
       )  # B x N
       all_cell_centers_ll_in_batch = jax.lax.all_gather(
           cell_centers_ll, axis_name=axis_name, tiled=True
       )  # B x N x 2
+    else:
+      all_cell_idx_in_batch = cell_idx
+      all_cell_centers_ll_in_batch = cell_centers_ll
 
     # Handle memory:
     to_memorize = {
@@ -278,7 +279,7 @@ class GeoLocalizer(nn.Module):
 
     gt_index = jnp.arange(batch_size)  # B
 
-    if not self.is_initializing():
+    if distributed:
       gt_index = jax.lax.axis_index(axis_name) * batch_size + gt_index
 
     # B x NB
@@ -320,6 +321,7 @@ class GeoLocalizer(nn.Module):
       *,
       train: bool,
       debug: bool = False,
+      axis_name: str | None = 'batch',
   ) -> types.Predictions:
     image_pixels, aerial_pixels = self.get_image_pixels(batch, train)
     batch = flatten_batch(batch, stride=None)
@@ -355,6 +357,7 @@ class GeoLocalizer(nn.Module):
         aerial_logits,
         batch['aerial']['latlng'],
         batch,
+        axis_name=axis_name,
     )
     # Inverse probability from aerial to all SV in batch.
     aerial_sv_probs = self.stochastic_probs(
@@ -363,6 +366,7 @@ class GeoLocalizer(nn.Module):
         logits,
         batch['latlng'],
         batch,
+        axis_name=axis_name,
         target_name='aerialsv',
     )
     pred['aerial_sv_stochastic_probs'] = aerial_sv_probs
