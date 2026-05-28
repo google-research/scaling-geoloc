@@ -54,7 +54,6 @@ def get_augment_fn(
   return augmentations.per_image(augmentations.sequential(list_augmentations))
 
 
-
 class GeoLocalizer(nn.Module):
   """SV-aerial retrieval model."""
 

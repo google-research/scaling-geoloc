@@ -642,27 +642,41 @@ class ViTBackbone(nn.Module):
       pretrained_weights: str | None = None,
       pretrained_checkpoint: str | None = None,
   ) -> Any:
-    """Loads pretrained parameters."""
-    if pretrained_weights is not None or pretrained_checkpoint is not None:
-      if pretrained_weights:
-        logging.info('Loading pretrained weights: %s', pretrained_weights)
-      else:
-        logging.info('Loading pretrained checkpoint: %s', pretrained_checkpoint)
-      raise NotImplementedError('Loading pretrained weights is not implemented.')
+    """Loads pretrained parameters from a .npz file produced by convert_pretrained.py.
 
-      def check_shape_equal(x, y) -> bool:
-        is_shape_equal = x.shape == y.shape
-        if not is_shape_equal:
-          raise ValueError(f'Shapes are not identical: {x.shape} != {y.shape}')
-        return is_shape_equal
+    The .npz uses slash-separated flat keys. Only keys present in the file are
+    overwritten; remaining params (e.g. the head) keep their initialized values.
+    Shapes of loaded keys must match model_params exactly.
+    """
+    if pretrained_weights is None and pretrained_checkpoint is None:
+      return model_params
 
-      jax.tree.map(
-          check_shape_equal,
-          model_params,
-          pretrained_params,
-      )
-      model_params = pretrained_params
-    return model_params
+    path = pretrained_weights or pretrained_checkpoint
+    if not path.endswith('.npz'):
+      path = f'weights/{path}.npz'
+    logging.info('Loading pretrained weights: %s', path)
+
+    import numpy as np
+    import flax.traverse_util
+    import flax.core
+
+    flat_pretrained = dict(np.load(path))
+    flat_model = flax.traverse_util.flatten_dict(
+        flax.core.unfreeze(model_params), sep='/'
+    )
+
+    for key, value in flat_pretrained.items():
+      if key not in flat_model:
+        logging.warning('Pretrained key not found in model, skipping: %s', key)
+        continue
+      if value.shape != flat_model[key].shape:
+        raise ValueError(
+            f'Shape mismatch for {key}: '
+            f'pretrained {value.shape} vs model {flat_model[key].shape}'
+        )
+      flat_model[key] = jnp.asarray(value)
+
+    return flax.traverse_util.unflatten_dict(flat_model, sep='/')
 
 
 class ViTModel(base_model.BaseModel):
