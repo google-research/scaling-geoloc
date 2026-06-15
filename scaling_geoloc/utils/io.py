@@ -18,14 +18,16 @@ import ast
 import concurrent.futures
 import functools
 import io
+from pathlib import Path
 import os
 from typing import Any
+import yaml
 
 import numpy as np
 import pandas as pd
 import tqdm
 
-from google3.pyglib import gfile
+from ml_collections import config_dict
 
 
 def literal_return(val: str) -> Any:
@@ -36,7 +38,7 @@ def literal_return(val: str) -> Any:
 
 
 def _read_csv(path: str, literal_eval: bool = False, **kwargs) -> pd.DataFrame:
-  with gfile.Open(path, 'r') as f:
+  with open(path, 'r') as f:
     df: pd.DataFrame = pd.read_csv(f, **kwargs)
   if literal_eval:
     df = df.map(literal_return)
@@ -53,7 +55,7 @@ def read_sharded_csv(
     **kwargs,
 ) -> pd.DataFrame:
   """Reads a sharded CSV file into a DataFrame."""
-  paths = gfile.Glob(pattern)
+  paths = Path().glob(pattern)
   with concurrent.futures.ThreadPoolExecutor(
       max_workers=max_workers
   ) as executor:
@@ -103,7 +105,7 @@ def npsavez(
     allow_pickle: bool = False,
     **kwargs,
 ):
-  with gfile.Open(file_path, 'wb') as f:
+  with open(file_path, 'wb') as f:
     np.savez(
         f,
         *args,
@@ -117,7 +119,7 @@ def npsave(
     data: Any,
     allow_pickle: bool = False,
 ):
-  with gfile.Open(file_path, 'wb') as f:
+  with open(file_path, 'wb') as f:
     np.save(
         f,
         data,
@@ -142,7 +144,7 @@ def npload(fname: str, allow_pickle: bool = False) -> Any:
     loaded = np.load(fname, allow_pickle=allow_pickle)
   else:
     # For other (remote) paths go via gfile+BytesIO as np.load requires seeks.
-    with gfile.Open(fname, 'rb') as f:
+    with open(fname, 'rb') as f:
       data = f.read()
     loaded = np.load(io.BytesIO(data), allow_pickle=allow_pickle)
 
@@ -153,3 +155,14 @@ def npload(fname: str, allow_pickle: bool = False) -> Any:
     return loaded
   else:
     return dict(loaded)
+
+
+def config_load(workdir: str) -> config_dict.ConfigDict:
+  path = Path(workdir) / 'config.yaml'
+  return config_dict.ConfigDict(yaml.unsafe_load(path.read_text()))
+
+
+def config_save(workdir: str, config: config_dict.ConfigDict):
+  workdir = Path(workdir)
+  workdir.mkdir(parents=True, exist_ok=True)
+  (workdir / 'config.yaml').write_text(config.to_yaml())

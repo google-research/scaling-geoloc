@@ -14,16 +14,80 @@
 
 """Geometry utils."""
 
+import dataclasses
+
 from etils.array_types import BoolArray
 from etils.array_types import FloatArray
 import jax.numpy as jnp
 import jaxcam
+from typing import TypeAlias, Union
 from scaling_geoloc.utils import hidden_helpers
+from scaling_geoloc import types
+import numpy as np
 
-MaskedPoints2D = tuple[FloatArray["... 2"], BoolArray["... 1"]]
-MaskedPoints2DAndDepth = tuple[
+MaskedPoints2D: TypeAlias = tuple[FloatArray["... 2"], BoolArray["... 1"]]
+MaskedPoints2DAndDepth: TypeAlias = tuple[
     FloatArray["... 2"], BoolArray["... 1"], FloatArray["... 1"]
 ]
+Points2D: TypeAlias = FloatArray['... n 2']
+RotationMatrix2D: TypeAlias = FloatArray['... 2 2']
+Angle: TypeAlias = FloatArray['...']
+Point2D: TypeAlias = FloatArray['... 2']
+
+
+@dataclasses.dataclass
+class Transform2D:
+  """SE(2) transformation with 2-DoF translation and 1-DoF rotation.
+
+  Attributes:
+    angle: Rotation angle, in radians.
+    t: 2D translation vector.
+  """
+
+  angle: Angle
+  t: Point2D
+
+  @classmethod
+  def from_radians(cls, angle: Angle, t: Point2D) -> 'Transform2D':
+    return cls(angle=angle, t=t)
+
+  @property
+  def R(self) -> RotationMatrix2D:
+    cos = jnp.cos(self.angle)
+    sin = jnp.sin(self.angle)
+    R_flat = jnp.stack([cos, -sin, sin, cos], -1)
+    return R_flat.reshape(*self.angle.shape, 2, 2)
+
+  @property
+  def inv(self) -> 'Transform2D':
+    R_inv = self.R.swapaxes(-1, -2)
+    t_inv = -jnp.einsum('...ij,...j->...i', R_inv, self.t)
+    return self.__class__(angle=-self.angle, t=t_inv)
+
+  def magnitude(self) -> tuple[FloatArray, FloatArray]:
+    dr = jnp.rad2deg(jnp.abs(self.angle)) % 360
+    dr = jnp.minimum(dr, 360 - dr)
+    dt = jnp.linalg.norm(self.t, axis=-1)
+    return dr, dt
+
+  def transform(self, points: Points2D) -> Points2D:
+    points = jnp.einsum('...ij,...nj->...ni', self.R, points)
+    return self.t[..., None, :] + points
+
+  def compose(self, other: 'Transform2D') -> 'Transform2D':
+    angle = self.angle + other.angle
+    t = self.t + jnp.einsum('...ij,...j->...i', self.R, other.t)
+    return self.__class__(angle=angle, t=t)
+
+  def __matmul__(
+      self, other: Union[Points2D, 'Transform2D']
+  ) -> Union[Points2D, 'Transform2D']:
+    if isinstance(other, (jnp.ndarray, np.ndarray)):
+      return self.transform(other)
+    elif isinstance(other, Transform2D):
+      return self.compose(other)
+    else:
+      raise TypeError(f'Unexpected type: {type(other)}')
 
 
 def project_points(
@@ -85,3 +149,114 @@ def project_points(
   valid = valid & (pixel_x < camera.image_size[0])
   valid = valid & (pixel_y < camera.image_size[1])
   return pixels, valid[..., None], local_z[..., None]
+
+
+def create_jaxcam(
+    cam_t_w: FloatArray['... 4 4'],
+    intrinsics: types.DataDict | jnp.ndarray,
+    is_fisheye: bool = True,
+    use_inverted_distortion: bool = False,
+) -> jaxcam.Camera:
+  """Create a jaxcam.Camera from a 4x4 pose matrix and intrinsics."""
+  cam_r_w = cam_t_w[..., :3, :3]
+  w_p_cam = jnp.linalg.inv(cam_t_w)[..., :3, -1]
+  cam = jaxcam.Camera.create(
+      orientation=cam_r_w,
+      position=w_p_cam,
+      focal_length=intrinsics['K'][..., 0, 0],
+      principal_point=intrinsics['K'][..., :2, -1],
+      image_size=jnp.stack(
+          [intrinsics['width'], intrinsics['height']], axis=-1
+      ),
+      radial_distortion=None,
+      tangential_distortion=(
+          None
+          if use_inverted_distortion
+          else intrinsics['tangential_distortion']
+      ),
+      skew=jnp.zeros_like(intrinsics['K'][..., 0, 1]),
+      pixel_aspect_ratio=intrinsics['K'][..., 1, 1]
+      / intrinsics['K'][..., 0, 0],
+      is_fisheye=is_fisheye,
+  )
+  radial_distortion = jnp.concatenate(
+      [
+          intrinsics['radial_distortion'],
+          jnp.zeros_like(intrinsics['radial_distortion'][..., -1:]),
+      ],
+      axis=-1,
+  )
+  if use_inverted_distortion:
+    radial_distortion = jaxcam.invert_radial_distortion_coefficients(
+        radial_distortion
+    )
+
+  # Manually set the radial distortion to avoid hidden padding.
+  return dataclasses.replace(
+      cam,
+      radial_distortion=radial_distortion,
+      use_inverted_distortion=use_inverted_distortion,
+  )
+
+
+def deg2rad(deg: float) -> float:
+  return deg / 180 * jnp.pi
+
+
+def rotation_from_rpy(
+    roll: float, pitch: float, yaw: float, degree: bool = False
+) -> FloatArray['3 3']:
+  """Creates a rotation matrix from roll, pitch, yaw."""
+  if degree:
+    roll = deg2rad(roll)
+    pitch = deg2rad(pitch)
+    yaw = deg2rad(yaw)
+  rot_x = jnp.zeros((3, 3))
+  rot_x = rot_x.at[0, 0].set(1)
+  rot_x = rot_x.at[1, 1].set(jnp.cos(pitch))
+  rot_x = rot_x.at[1, 2].set(jnp.sin(pitch))
+  rot_x = rot_x.at[2, 1].set(-jnp.sin(pitch))
+  rot_x = rot_x.at[2, 2].set(jnp.cos(pitch))
+
+  rot_y = jnp.zeros((3, 3))
+  rot_y = rot_y.at[0, 0].set(jnp.cos(yaw))
+  rot_y = rot_y.at[0, 2].set(-jnp.sin(yaw))
+  rot_y = rot_y.at[1, 1].set(1)
+  rot_y = rot_y.at[2, 0].set(jnp.sin(yaw))
+  rot_y = rot_y.at[2, 2].set(jnp.cos(yaw))
+
+  rot_z = jnp.zeros((3, 3))
+  rot_z = rot_z.at[0, 0].set(jnp.cos(roll))
+  rot_z = rot_z.at[0, 1].set(jnp.sin(roll))
+  rot_z = rot_z.at[1, 0].set(-jnp.sin(roll))
+  rot_z = rot_z.at[1, 1].set(jnp.cos(roll))
+  rot_z = rot_z.at[2, 2].set(1)
+  return rot_z @ rot_x @ rot_y
+
+
+def camera_from_rpyf(
+    height: int, width: int, roll: float, pitch: float, yaw: float, hfov: float
+) -> jaxcam.Camera:
+  """Creates a camera from roll, pitch, yaw, hfov, height, width."""
+  cam_r_identity = rotation_from_rpy(roll, pitch, yaw, degree=True)
+  focal_length = width / 2 / jnp.tan(deg2rad(hfov / 2))
+  principal_point = jnp.array([width / 2, height / 2]) + 0.5
+  image_size = jnp.array([width, height])
+  return jaxcam.Camera.create(
+      orientation=cam_r_identity,
+      position=jnp.zeros(3),
+      focal_length=focal_length,
+      principal_point=principal_point,
+      image_size=image_size,
+      is_fisheye=False,
+      radial_distortion=np.zeros(3),
+      tangential_distortion=np.zeros(2),
+  )
+
+
+def transform_points(
+    y_t_x: FloatArray['4 4'],
+    x_points: FloatArray['N 3'],
+) -> FloatArray['N 3']:
+  """3D transform points from coordinate system x to y."""
+  return x_points @ y_t_x[:3, :3].T + y_t_x[:3, -1]

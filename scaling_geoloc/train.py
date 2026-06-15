@@ -14,28 +14,15 @@
 
 """Training entry point."""
 
-import functools
-import os
-
-from absl import flags
 from absl import logging
 from clu import metric_writers
 import jax
 import jax.numpy as jnp
 import ml_collections
 from scenic import app
-
-from google3.learning.brain.python.debug_server import debug_server  # pylint: disable=unused-import
-from scaling_geoloc.scenic import datasets
-from scaling_geoloc.scenic import load
-from scaling_geoloc.scenic import momentum_trainer
-from scaling_geoloc.scenic import trainer
-from scaling_geoloc.scenic.models import vit
-from google3.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
-
-
-os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.8'
-_FLAGS = flags.FLAGS
+from scaling_geoloc.data import datasets
+from scaling_geoloc import load
+from scaling_geoloc import trainer
 
 
 def main(
@@ -65,14 +52,9 @@ def main(
 
   pretrained_meta_data = None
   pretrained_train_state = None
-  if config.get('pretrained_xm') is not None:
-    if isinstance(config.pretrained_xm, ml_collections.ConfigDict):
-      xid, wid = config.pretrained_xm.xid, config.pretrained_xm.wid
-    else:
-      xid, wid = config.pretrained_xm
-    logging.info('Loading pretrained model from XM at (%d, %d).', xid, wid)
+  if config.get('pretrained_path') is not None:
     pretrained_config, pretrained_model, pretrained_train_state = (
-        trainer.load_from_xm(xid, wid)
+        trainer.reload_experiment(config.pretrained_path)
     )
     if config.get('pretrained_load_meta_data'):
       logging.info('Loading pretrained meta data.')
@@ -93,72 +75,39 @@ def main(
 
   logging.info('Created dataset.')
 
-  if config.model_name != 'dino_baseline':
-    model_cls = load.get_model(config.model_name)
-    experiment = trainer.Experiment.init(
-        rng=rng,
-        config=config,
-        model=model_cls(
-            config.model, dataset.meta_data, getattr(jnp, config.dtype_str)
-        ),
-        dummy_input=dataset.meta_data['dummy_batch_fn'](),
-        init_train=config.get('init_train', True),
-        pretrained_train_state=pretrained_train_state,
-        checkpoint_dir=workdir,
+  model_cls = load.get_model(config.model_name)
+  experiment = trainer.Experiment.init(
+      rng=rng,
+      config=config,
+      model=model_cls(
+          config.model, dataset.meta_data, getattr(jnp, config.dtype_str)
+      ),
+      dummy_input=dataset.meta_data['dummy_batch_fn'](),
+      init_train=config.get('init_train', True),
+      pretrained_train_state=pretrained_train_state,
+      checkpoint_dir=workdir,
+  )
+
+  if pretrained_train_state is not None:
+    del pretrained_train_state
+    jax.clear_caches()
+
+  logging.info('Created experiment.')
+
+  if config.overfit:
+    logging.info('Create overfit dataset.')
+    dummy_batch = dataset.meta_data['dummy_batch_fn']()
+    dataset = datasets.create_overfit_dataset(
+        lambda: dummy_batch,
+        num_train_examples=dataset.meta_data['num_train_examples'],
+        num_valid_examples=dataset.meta_data['num_valid_examples'],
+        meta_data=dataset.meta_data,
     )
 
-    if pretrained_train_state is not None:
-      del pretrained_train_state
-      jax.clear_caches()
+  logging.info('Starting training loop.')
 
-    logging.info('Created experiment.')
-
-    if config.overfit:
-      logging.info('Create overfit dataset.')
-      dummy_batch = dataset.meta_data['dummy_batch_fn']()
-      dataset = datasets.create_overfit_dataset(
-          lambda: dummy_batch,
-          num_train_examples=dataset.meta_data['num_train_examples'],
-          num_valid_examples=dataset.meta_data['num_valid_examples'],
-          meta_data=dataset.meta_data,
-      )
-
-    logging.info('Starting training loop.')
-
-    experiment.train_loop(dataset, writer, workdir)
-  else:
-    if config.overfit:
-      logging.info('Create overfit dataset.')
-      dummy_batch = dataset.meta_data['dummy_batch_fn']()
-      dataset = datasets.create_overfit_dataset(
-          lambda: dummy_batch,
-          num_train_examples=dataset.meta_data['num_train_examples'],
-          num_valid_examples=dataset.meta_data['num_valid_examples'],
-          meta_data=dataset.meta_data,
-      )
-
-    momentum_trainer.train(
-        rng=rng,
-        config=config,
-        model_cls=vit.ViTDINOModel,
-        dummy_input=dataset.meta_data['dummy_batch_fn'](),
-        dataset=dataset,
-        workdir=workdir,
-        writer=writer,
-    )
-
-
-def _g3_multiprocessing_hook(*_):
-  _FLAGS.jax_allow_unused_tpus = True
-  _FLAGS.jax_allow_unused_gpus = True
-  _FLAGS.jax_port = 0
-  _FLAGS.jax_controller_address = ''
+  experiment.train_loop(dataset, writer, workdir)
 
 
 if __name__ == '__main__':
-  g3_multiprocessing.g3_mp_lib.set_pre_run_hook(_g3_multiprocessing_hook)
-  jax.config.config_with_absl()
-  scenic_main = functools.partial(
-      app._run_main, main=main  #  pylint: disable=protected-access
-  )
-  g3_multiprocessing.handle_main(scenic_main)
+  app.run(main)
