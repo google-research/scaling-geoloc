@@ -31,8 +31,8 @@ from scenic.model_lib.layers import nn_layers
 
 from unigeoclip.scenic.models.utils import attention
 from unigeoclip.scenic.models.utils import norm
-from scaling_geoloc.scenic import load_params
-from scaling_geoloc.scenic import types
+from unigeoclip.scenic import load_params
+from scaling_geoloc import types
 from scaling_geoloc.utils import misc
 
 MaskArray: TypeAlias = jt.Bool[jt.Array, 'B L 1'] | jt.Int[jt.Array, 'B L']

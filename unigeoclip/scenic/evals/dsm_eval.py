@@ -34,9 +34,9 @@ from tensorflow.keras import optimizers
 
 from unigeoclip.scenic import datasets
 from unigeoclip.scenic.evals import classif_eval
-from scaling_geoloc.scenic import types
-from scaling_geoloc.scenic.evals import base_eval
-from scaling_geoloc.scenic.models import base
+from scaling_geoloc import types
+from scaling_geoloc.evals import base_eval
+from scaling_geoloc.models import base
 
 partial = functools.partial
 
@@ -88,7 +88,10 @@ def reshape_output(
 def get_loss_fn(
     y_true: tf.Tensor, y_pred: tf.Tensor, num_classes: int
 ) -> tf.Tensor:
+  # Flatten both sides to (pixels, classes) / (pixels,) so the per-pixel sparse
+  # cross-entropy lines up (y_true carries -1 for the ignored class).
   y_pred = tf.reshape(y_pred, (-1, num_classes))
+  y_true = tf.reshape(y_true, (-1,))
   loss = tf.keras.losses.SparseCategoricalCrossentropy(
       from_logits=True, ignore_class=-1
   )
@@ -107,7 +110,7 @@ def get_metrics(
     n_epochs: int = 200,
     patch_size: int = 2,
 ) -> tuple[float, float]:
-  """Computes linear probing metrics."""
+  """Trains a linear DSM segmentation head and returns (mIoU, accuracy)."""
   optim = optimizers.SGD(learning_rate=learning_rate)
 
   module_list = [
@@ -166,6 +169,7 @@ def compute_metrics(
     db_labels: np.ndarray,
     batch_sizes: Sequence[int],
     learning_rates: Sequence[float],
+    n_epochs: int = 200,
 ) -> dict[str, float]:
   """Computes segmentation metrics."""
   # Assuming the image is square, which leads to a squared number of tokens.
@@ -205,6 +209,7 @@ def compute_metrics(
           batch_size=batch_size,
           learning_rate=learning_rate,
           num_classes=num_classes,
+          n_epochs=n_epochs,
       )
       miou_list.append(miou)
       acc_list.append(acc)
@@ -280,6 +285,7 @@ class DsmSegmentationEvaluation(base_eval.BaseEval):
         batch_sizes=self.config.batch_sizes_eval,
         learning_rates=self.config.learning_rates,
         num_classes=self.config.num_classes,
+        n_epochs=self.config.get('n_epochs', 200),
     )
 
     return {}, eval_metrics, {}

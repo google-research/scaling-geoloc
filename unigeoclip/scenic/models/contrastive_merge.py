@@ -30,8 +30,9 @@ from unigeoclip.scenic.models import siglip
 from unigeoclip.scenic.models import siglip_text
 from unigeoclip.scenic.models import vit
 from unigeoclip.utils import augmentations
-from scaling_geoloc.scenic import types
-from scaling_geoloc.scenic.models import base
+from scaling_geoloc import types
+from scaling_geoloc.models import base
+from scaling_geoloc.utils import geo
 from scaling_geoloc.utils import misc
 
 augment: augmentations.AugmentationFn = augmentations.per_image(
@@ -369,7 +370,7 @@ class BackbonesContrastive(nn.Module):
     """Generates representations for an array of aerials."""
     if 'aerial' not in self.modalities:
       raise ValueError('aerial is not in the list of modalities.')
-    return self.aerial_backbone.encode_multiview(aerial)
+    return self.aerial_backbone.encode_multiview(aerial, train=False)
 
   def get_text_embeddings(
       self, text: FloatArray['N L D']
@@ -459,11 +460,14 @@ class ContrastiveModel(base.BaseModel):
             )
         )
       elif encoder_config.get('name', None) == 'siglip':
-        model_params[f'{modality}_backbone'] = (
-            siglip.PreTrainedSigLip2Model.load_pretrained_params(
-                encoder_config.model_name,
-            )
-        )
+        # ``load_pretrained=False`` keeps the random init (used by CPU tests that
+        # have no SigLIP2 checkpoint on disk); the default loads the weights.
+        if encoder_config.get('load_pretrained', True):
+          model_params[f'{modality}_backbone'] = (
+              siglip.PreTrainedSigLip2Model.load_pretrained_params(
+                  encoder_config.model_name,
+              )
+          )
       elif encoder_config.get('name', None) == 'siglip_text':
         model_params[f'{modality}_backbone'] = (
             siglip_text.PreTrainedSigLip2TextModel.load_pretrained_params(
@@ -548,7 +552,7 @@ class ContrastiveModel(base.BaseModel):
       else:
         latlngs_predicted = latlngs[pred_assignment]
 
-      distance_meters = misc.haversine_distance(
+      distance_meters = geo.haversine_distance(
           latlngs[:, None, :], latlngs_predicted
       )[..., 0]
 
@@ -628,7 +632,7 @@ class ContrastiveModel(base.BaseModel):
     else:
       latlngs_predicted = latlngs[pred_assignment]
 
-    distance_meters = misc.haversine_distance(
+    distance_meters = geo.haversine_distance(
         latlngs[:, None, :], latlngs_predicted
     )[..., 0]
 
@@ -722,7 +726,7 @@ class ContrastiveModel(base.BaseModel):
 
       latlngs_predicted = latlngs_target[pred_assignment]
 
-      distance_meters = misc.haversine_distance(
+      distance_meters = geo.haversine_distance(
           latlng_query[:, None, :], latlngs_predicted
       )[..., 0]
 

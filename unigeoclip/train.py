@@ -12,12 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Training entry point."""
+"""Training entry point for UniGeoCLIP."""
 
-import functools
-import os
-
-from absl import flags
 from absl import logging
 from clu import metric_writers
 import jax
@@ -25,18 +21,9 @@ import jax.numpy as jnp
 import ml_collections
 from scenic import app
 
-from google3.learning.brain.python.debug_server import debug_server  # pylint: disable=unused-import
-import google3.learning.deepmind.xmanager2.client.google as xm
-
 from unigeoclip.scenic import datasets
 from unigeoclip.scenic import load
 from unigeoclip.scenic import trainer
-
-from google3.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
-
-
-os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.8'
-_FLAGS = flags.FLAGS
 
 
 def main(
@@ -46,10 +33,6 @@ def main(
     writer: metric_writers.MetricWriter,
 ) -> None:
   """Main function for Scenic."""
-  # Call xm.setup_work_unit() to ensure the "Parameter Config" tab is available
-  # in the XManager UI (see go/xm-setup-binaries). Scenic's main function
-  # doesn't do this.
-  xm.setup_work_unit()
 
   _, rng = jax.random.split(rng)
 
@@ -70,14 +53,9 @@ def main(
 
   pretrained_meta_data = None
   pretrained_train_state = None
-  if config.get('pretrained_xm') is not None:
-    if isinstance(config.pretrained_xm, ml_collections.ConfigDict):
-      xid, wid = config.pretrained_xm.xid, config.pretrained_xm.wid
-    else:
-      xid, wid = config.pretrained_xm
-    logging.info('Loading pretrained model from XM at (%d, %d).', xid, wid)
+  if config.get('pretrained_path') is not None:
     pretrained_config, pretrained_model, pretrained_train_state = (
-        trainer.load_from_xm(xid, wid)
+        trainer.reload_experiment(config.pretrained_path)
     )
     if config.get('pretrained_load_meta_data'):
       logging.info('Loading pretrained meta data.')
@@ -85,7 +63,6 @@ def main(
     if config.get('pretrained_load_model_config'):
       logging.info('Loading pretrained model config (overwrite).')
       config.model.update(pretrained_config.model)
-      logging.info('Updated model config: %s', config.model)
     del pretrained_model
 
   dataset = datasets.build_dataset(
@@ -115,24 +92,10 @@ def main(
     del pretrained_train_state
     jax.clear_caches()
 
-  logging.info('Created experiment.')
-
-  logging.info('Starting training loop.')
+  logging.info('Created experiment. Starting training loop.')
 
   experiment.train_loop(dataset, writer, workdir)
 
 
-def _g3_multiprocessing_hook(*_):
-  _FLAGS.jax_allow_unused_tpus = True
-  _FLAGS.jax_allow_unused_gpus = True
-  _FLAGS.jax_port = 0
-  _FLAGS.jax_controller_address = ''
-
-
 if __name__ == '__main__':
-  g3_multiprocessing.g3_mp_lib.set_pre_run_hook(_g3_multiprocessing_hook)
-  jax.config.config_with_absl()
-  scenic_main = functools.partial(
-      app._run_main, main=main  #  pylint: disable=protected-access
-  )
-  g3_multiprocessing.handle_main(scenic_main)
+  app.run(main)

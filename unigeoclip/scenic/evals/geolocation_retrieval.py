@@ -32,11 +32,12 @@ from scenic.train_lib import train_utils
 
 from unigeoclip.scenic.evals import utils
 from unigeoclip.scenic.models import contrastive_merge
-from scaling_geoloc.scenic import datasets
-from scaling_geoloc.scenic import types
-from scaling_geoloc.scenic.evals import base_eval
-from scaling_geoloc.scenic.models import base
+from scaling_geoloc.data import datasets
+from scaling_geoloc import types
+from scaling_geoloc.evals import base_eval
+from scaling_geoloc.models import base
 from scaling_geoloc.utils import io as lama_io
+from scaling_geoloc.utils import geo
 from scaling_geoloc.utils import misc
 
 
@@ -124,7 +125,7 @@ def get_ensemble_distance_meters(
 
     query_ll_batch = query_ll[start_idx:end_idx]
     pred_ll_batch = database_ll[pred_assignment_batch]
-    distance_meters_batch = misc.haversine_distance(
+    distance_meters_batch = geo.haversine_distance(
         query_ll_batch[:, None, :], pred_ll_batch
     ).squeeze(-1)
     all_distance_meters.append(distance_meters_batch)
@@ -224,7 +225,7 @@ def compute_metrics(
       query_ll = query_reps['latlng']
       pred_ll = database_ll[pred_assignment]
 
-      distance_meters = misc.haversine_distance(query_ll[:, None, :], pred_ll)[
+      distance_meters = geo.haversine_distance(query_ll[:, None, :], pred_ll)[
           ..., 0
       ]
 

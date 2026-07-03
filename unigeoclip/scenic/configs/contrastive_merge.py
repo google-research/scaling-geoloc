@@ -12,164 +12,194 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Config file for contrastive merge model."""
+"""Training config for the UniGeoCLIP multimodal contrastive model.
 
-import importlib
-from typing import Any, Final, Mapping, Sequence
+Public release: backbones default to the in-repo ViT (no ``big_vision``), the
+text modality consumes precomputed SigLIP embeddings through a linear
+projection, and the data is the procedural ``MultiModalDummyDataSource`` so the
+whole pipeline runs on CPU. Override any field from the command line, e.g.::
+
+    python -m unigeoclip.train \
+        --config=unigeoclip/scenic/configs/contrastive_merge.py \
+        --workdir=/tmp/wd \
+        --config.num_training_steps=1000 \
+        --config.batch_size_per_device=64
+
+Pass ``--config=...:B`` (or ``S``/``L``) to select a larger ViT preset.
+"""
+
+from collections.abc import Sequence
 
 import ml_collections
+from ml_collections import config_dict
 
 from unigeoclip.scenic.configs import defaults
-from unigeoclip.scenic.configs import helper_evals as evals
 
-_PATH: Final[str] = (
-    'unigeoclip.scenic.configs'
-)
-_MODELS: Mapping[str, str] = {
-    'sv': 'siglip_sv',  # Or you can choose 'vit_sv'
-    'aerial': 'siglip_aerial',  # Or you can choose 'vit_aerial'
-    'latlng': 'rff_encoder',  # Or you can choose 'siren_net'
-    'text': (
-        'siglip_text'
-    ),  # Or you can choose None if you want to use precomputed text embeddings
-    'dsm': 'vit_dsm',
-}
-_MODALITIES: Sequence[str] = ['sv', 'aerial', 'latlng', 'dsm', 'text']
-_BATCH_SIZES: Mapping[str, int] = {'S': 512, 'B': 256, 'L': 128, 'So400m': 128}
+_HIDDEN = {'tiny': 64, 'Ti': 192, 'S': 384, 'B': 768, 'L': 1024}
+_LAYERS = {'tiny': 2, 'Ti': 12, 'S': 12, 'B': 12, 'L': 24}
+_HEADS = {'tiny': 2, 'Ti': 3, 'S': 6, 'B': 12, 'L': 16}
+_MODALITIES = ('sv', 'aerial', 'latlng', 'dsm', 'text')
 
 
-def get_config(
-    data_repo: str = 'area_summaries_sharded',
-    location: str = 'area_summaries',
-    *,
-    model_names: Mapping[str, str] | None = None,
-    modalities: Sequence[str] | None = None,
-    model_size: str = 'B',
-    loss_name: str = 'InfoNCE',
-    num_workers: int = 32,
-    add_evals: bool = True,
+def _vit_encoder(
+    preset: str, img_size: int, *, imagenet_norm: bool
 ) -> ml_collections.ConfigDict:
-  """Returns the config."""
-  config = defaults.base_contrastive().unlock()
-
-  if modalities is None:
-    modalities = _MODALITIES
-
-  config.model_name = 'contrastive_merge'
-
-  # Data config
-  config.data.dirname = data_repo
-  config.data.locations.train = [location]
-  config.data.locations.valid = [location]
-  config.data.valid_split = 'valid'
-  config.data.preprocess.s2cell_level = 16
-  config.data.preprocess.index_file_name = 'train_grouped_s2cells.csv*'
-  config.data.grain_num_workers = 32
-  config.data.grain_num_workers_valid = 4
-  config.data.make_s2cell_data_source = False
-  config.data.preprocess.build_s2cell_index = True
-
-  # Models configs
-  config.model = ml_collections.ConfigDict()
-  config.model.modalities = modalities
-
-  if model_names is None:
-    model_names = _MODELS
-
-  for modality in modalities:
-    if model_names[modality] is not None:
-      config.model[f'{modality}_encoder'] = importlib.import_module(
-          f'{_PATH}.{model_names[modality]}'
-      ).get_config(
-          model_size=model_size,
-      )
-
-  config.model.exclude_pairs = []
-  config.model.crop = 'none'
-  config.model.temperature = 0.01
-  config.model.learned_temperature = False
-  config.model.l2_normalize = True
-  config.model.l2_normalize_per_head = False
-  config.model.compose_loss = loss_name
-  config.model.latlng_proj = False
-  config.model.text_proj = False
-  config.model.do_augment = True
-  config.model.normalize_output_embeddings = True
-  config.model.all2all_proj = False
-  config.model.latlng_noise_meters = 50.0
-
-  # Training config
-  config.batch_size_per_device = _BATCH_SIZES[model_size]
-  config.lr.base_learning_rate = 2e-4
-  config.num_training_steps = 200_000
-  config.lr.warmup_steps = 4_000  # Shorter warmup.
-  config.log_eval_interval = 5_000
-  config.checkpoint_interval = 5_000
-  config.overwrite_lr = ml_collections.ConfigDict()
-  config.overwrite_lr.latlng_backbone = 2e-4
-
-  config.model.latlng_encoder.model_name = 'rff2'
-
-  if add_evals:
-    config.run_test_evals_in_process = True
-    config.test_evals = ml_collections.ConfigDict()
-    config.test_evals.areas_dataset_geoloc = evals.cross_view_retrieval(
-        128 * config.get_ref('device_count'),
-        num_workers,
-        ('area_summaries_sharded', 'test', ['area_summaries']),
-        ('area_summaries_sharded', 'test_aerial', ['area_summaries']),
-    )
-    config.test_evals.areas_dataset_geoloc.retrieval_batch_size = 512
-    config.test_evals.areas_dataset_geoloc.cell_codes = [16]
-    config.test_evals.areas_dataset_geoloc.cache_results = False
-    config.test_evals.areas_dataset_geoloc.restrict_to_s2cells = 'data'
-    config.test_evals.areas_dataset_geoloc.eval_interval = (
-        config.num_training_steps
-    )
-
-    config.test_evals.ood_geoloc = evals.cross_view_retrieval(
-        32 * config.get_ref('device_count'),
-        num_workers,
-        ('amsterdam_10m_aerial_aug_sv_bk', 'test', ['amsterdam']),
-        ('amsterdam_10m_aerial_aug_sv_bk', 'test_aerial', ['amsterdam']),
-    )
-    config.test_evals.ood_geoloc.retrieval_batch_size = 512
-    config.test_evals.ood_geoloc.cell_codes = []
-    config.test_evals.ood_geoloc.cache_results = False
-    config.test_evals.ood_geoloc.restrict_to_s2cells = 'data'
-    config.test_evals.ood_geoloc.eval_interval = config.num_training_steps
-
-    config.test_evals.pv4ger = evals.classif_eval(
-        16 * config.get_ref('device_count'),
-        'valid',
-        num_workers,
-        'pv4ger_classification',
-        num_classes=2,
-    )
-    config.test_evals.pv4ger.eval_interval = config.num_training_steps
-
-    config.test_evals.chesapeake = evals.semseg_eval(
-        2 * config.get_ref('device_count'),
-        'test',
-        num_workers,
-        'm-chesapeake',
-        num_classes=7,
-    )
-    config.test_evals.chesapeake.eval_interval = config.num_training_steps
-
-    config.test_evals.mdas_dsm = evals.semseg_eval(
-        16 * config.get_ref('device_count'),
-        'test',
-        num_workers,
-        'mdas',
-        num_classes=13,
-    )
-    config.test_evals.mdas_dsm.eval_name = 'dsm_eval'
-    config.test_evals.mdas_dsm.eval_interval = config.num_training_steps
-
-  return config
+  """A ViT image encoder config (sv / aerial / dsm)."""
+  cfg = ml_collections.ConfigDict()
+  cfg.name = 'vit'
+  cfg.hidden_size = _HIDDEN[preset]
+  cfg.patches = ml_collections.ConfigDict()
+  cfg.patches.size = [16, 16]
+  cfg.posembs = (img_size // 16, img_size // 16)
+  cfg.num_heads = _HEADS[preset]
+  cfg.mlp_dim = 4 * _HIDDEN[preset]
+  cfg.num_layers = _LAYERS[preset]
+  cfg.head = 'linear'
+  cfg.head_hidden_dim = 2048
+  cfg.head_bottleneck_dim = 256
+  cfg.head_output_dim = _HIDDEN[preset]
+  cfg.normalize_last_layer = True
+  cfg.use_bn = False
+  cfg.add_class_token = True
+  cfg.n_registers = 4
+  cfg.pooling = 'tok'
+  cfg.pos_interpolation_method = 'bicubic'
+  cfg.dropout_rate = 0.0
+  cfg.attention_dropout_rate = 0.0
+  cfg.stochastic_depth = 0.0
+  cfg.use_bias = True
+  cfg.pretrained_weights = None
+  cfg.freeze_backbone = False
+  cfg.imagenet_normalization = imagenet_norm
+  cfg.train_last_layers = -1
+  cfg.positional_embedding = 'rope'
+  cfg.norm_layer = 'layernorm'
+  cfg.head_config = ml_collections.ConfigDict()
+  return cfg
 
 
-def get_hyper(h: Any) -> Any:
-  # Run against our own main baselines.
-  return h.product([])
+def _rff_encoder(preset: str) -> ml_collections.ConfigDict:
+  """A random-Fourier-feature transformer location encoder (latlng)."""
+  cfg = ml_collections.ConfigDict()
+  cfg.model_name = 'rff2'
+  cfg.cell_code_dim = _HIDDEN[preset]
+  cfg.output_dim = _HIDDEN[preset]
+  cfg.hidden_dim = _HIDDEN[preset]
+  cfg.sigmas = (2**0, 2**4, 2**8, 2**12)
+  cfg.num_hidden_layers = max(2, _LAYERS[preset] // 2)
+  cfg.num_heads = _HEADS[preset]
+  cfg.n_registers = 8
+  cfg.norm_layer = 'layernorm'
+  return cfg
+
+
+def model_config(
+    preset: str, modalities: Sequence[str]
+) -> ml_collections.ConfigDict:
+  """Assembles the contrastive model config for the given modalities."""
+  cfg = ml_collections.ConfigDict()
+  cfg.modalities = list(modalities)
+  if 'sv' in modalities:
+    cfg.sv_encoder = _vit_encoder(preset, 224, imagenet_norm=True)
+  if 'aerial' in modalities:
+    cfg.aerial_encoder = _vit_encoder(preset, 256, imagenet_norm=False)
+  if 'dsm' in modalities:
+    cfg.dsm_encoder = _vit_encoder(preset, 256, imagenet_norm=False)
+  if 'latlng' in modalities:
+    cfg.latlng_encoder = _rff_encoder(preset)
+  if 'text' in modalities:
+    # ``None`` => consume precomputed SigLIP text embeddings via a linear
+    # projection. Set a ``siglip_text`` encoder config to fine-tune a text tower
+    # (requires the optional ``big_vision`` package).
+    cfg.text_encoder = config_dict.placeholder(ml_collections.ConfigDict)
+  cfg.temperature = 0.01
+  cfg.learned_temperature = False
+  cfg.l2_normalize = False
+  cfg.l2_normalize_per_head = False
+  cfg.normalize_output_embeddings = True
+  cfg.compose_loss = 'InfoNCE'
+  cfg.exclude_pairs = []
+  cfg.latlng_proj = False
+  cfg.text_proj = False
+  cfg.all2all_proj = False
+  cfg.do_augment = True
+  cfg.crop = 'none'
+  cfg.crop_size = (224, 224)
+  cfg.latlng_noise_meters = 50.0
+  return cfg
+
+
+def data_config(preset: str) -> ml_collections.ConfigDict:
+  """Multimodal data config.
+
+  Procedural by default; set ``data_dir`` + ``location`` to read the 5-modality
+  ArrayRecord shards written by ``unigeoclip.data.generate_fake_multimodal_data``.
+  """
+  img = 64 if preset == 'tiny' else 224
+  cfg = ml_collections.ConfigDict()
+  cfg.dataset_name = config_dict.placeholder(str)  # None => multimodal foundation
+  # File-backed source (optional): <data_dir>/<location>/{train,valid}-*.arrayrecord
+  cfg.data_dir = 'datasets'
+  cfg.location = config_dict.placeholder(str)  # None => procedural dummy source
+  cfg.train_split = 'train'
+  cfg.valid_split = 'valid'
+  cfg.num_train_examples = 1024
+  cfg.num_valid_examples = 256
+  cfg.num_views = 1
+  cfg.sv_image_size = img
+  cfg.aerial_image_size = img
+  cfg.dsm_image_size = img
+  cfg.text_dim = 768
+  cfg.shuffle_train = True
+  cfg.shuffle_valid = True
+  cfg.grain_num_workers = 0
+  cfg.grain_num_workers_valid = 0
+  cfg.grain_num_threads = 1
+  cfg.grain_num_threads_valid = 1
+  cfg.grain_prefetch_buffer_size = 1
+  return cfg
+
+
+def get_config(preset: str = 'tiny') -> ml_collections.ConfigDict:
+  """Returns the training config. ``preset`` in {tiny, Ti, S, B, L}."""
+  cfg = defaults.base().unlock()
+  cfg.model_name = 'contrastive_merge'
+  cfg.model = model_config(preset, _MODALITIES)
+  cfg.data = data_config(preset)
+
+  # Schedule / optimizer.
+  cfg.lr = ml_collections.ConfigDict({
+      'learning_rate_schedule': 'compound',
+      'factors': 'constant * linear_warmup * cosine_decay',
+      'base_learning_rate': 2e-4,
+      'warmup_steps': 1_000,
+      'steps_per_cycle': 200_000,
+      'total_steps': 200_000,
+  })
+  cfg.optimizer = ml_collections.ConfigDict({
+      'optax_name': 'scale_by_adam',
+      'optax_configs': ml_collections.ConfigDict({'b1': 0.9, 'b2': 0.95}),
+      'weight_decay': 0.0,
+  })
+  cfg.max_grad_norm = 1.0
+  cfg.num_training_steps = 200_000
+
+  # Batch size: total = per-device * device_count (set in train.py).
+  cfg.batch_size_per_device = 8 if preset == 'tiny' else 64
+  cfg.batch_size = cfg.get_ref('batch_size_per_device') * cfg.get_ref(
+      'device_count'
+  )
+  cfg.batch_size_eval = cfg.get_ref('batch_size_per_device') * cfg.get_ref(
+      'device_count'
+  )
+
+  # Logging / checkpointing (small + cheap by default for the fake-data smoke).
+  cfg.log_summary_interval = 50
+  cfg.log_eval_interval = 5_000
+  cfg.checkpoint_interval = 5_000
+  cfg.skip_first_eval = True
+  cfg.skip_eval = True
+  cfg.skip_train_viz = True
+  cfg.xprof = False
+  cfg.checkpoint = True
+  return cfg.lock()

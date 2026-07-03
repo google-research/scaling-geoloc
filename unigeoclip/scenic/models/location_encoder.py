@@ -25,8 +25,8 @@ import ml_collections
 
 from unigeoclip.scenic.models.utils import attention
 from unigeoclip.scenic.models.utils import norm
-from scaling_geoloc.scenic import types
-from scaling_geoloc.scenic.models import base
+from scaling_geoloc import types
+from scaling_geoloc.models import base
 from scaling_geoloc.utils import misc
 
 

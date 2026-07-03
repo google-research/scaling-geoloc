@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""K-NN evaluation for classification models.
+"""Classification evaluation (linear probe + k-NN) for image encoders.
 
-This script implements a k-NN evaluation protocol for classification models.
-It extracts features for a training set (database) and a validation set
-(queries), and then for each query, it finds the k-nearest neighbors in the
-database and predicts the class via majority vote.
+Extracts aerial features for a training set (database) and a validation set
+(queries), then reports two probes: a linear-probing accuracy (a Dense head
+swept over batch sizes / learning rates) and a k-NN accuracy (majority vote over
+the k nearest neighbours in the database, for each k in ``k_values``).
 """
 
 import collections
@@ -36,9 +36,9 @@ from tensorflow.keras import optimizers
 
 from unigeoclip.scenic import datasets
 from unigeoclip.scenic.models import contrastive_merge
-from scaling_geoloc.scenic import types
-from scaling_geoloc.scenic.evals import base_eval
-from scaling_geoloc.scenic.models import base
+from scaling_geoloc import types
+from scaling_geoloc.evals import base_eval
+from scaling_geoloc.models import base
 from scaling_geoloc.utils import misc
 
 
@@ -183,6 +183,7 @@ def compute_metrics(
     normalize_output_embeddings: bool = True,
     k_values: Sequence[int] = (1, 5, 10),
     num_classes: int = 2,
+    n_epochs: int = 500,
 ) -> dict[str, float]:
   """Computes k-NN classification accuracy."""
   metrics = {}
@@ -202,6 +203,7 @@ def compute_metrics(
           batch_size,
           learning_rate,
           num_classes,
+          n_epochs=n_epochs,
       )
       accs.append(acc)
   metrics['linear_probing'] = np.max(accs)
@@ -294,6 +296,7 @@ class ClassificationEvaluation(base_eval.BaseEval):
         batch_sizes=self.config.batch_sizes_eval,
         learning_rates=self.config.learning_rates,
         num_classes=self.config.num_classes,
+        n_epochs=self.config.get('n_epochs', 500),
     )
 
     return {}, eval_metrics, {}

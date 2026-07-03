@@ -25,14 +25,19 @@ import numpy as np
 from scenic.dataset_lib import dataset_utils
 from scenic.train_lib import train_utils
 
-from scaling_geoloc.scenic.models import base
-from google3.util.geometry.python import s2
+from scaling_geoloc.models import base
+# Public release: the pip ``s2sphere`` package replaces the internal s2 library.
+import s2sphere as s2
 
 Predictions: TypeAlias = FloatArray['... D']
 
 
+def _token_str(token: bytes | str) -> str:
+  return token.decode('utf-8') if isinstance(token, bytes) else token
+
+
 def s2cell_token_to_latlng(
-    s2cell_tokens: Sequence[bytes],
+    s2cell_tokens: Sequence[bytes | str],
 ) -> FloatArray['N 2']:
   """Returns the latlng of the center of the s2cell.
 
@@ -44,27 +49,29 @@ def s2cell_token_to_latlng(
   """
   latlngs = []
   for s2cell_token in s2cell_tokens:
-    s2cell_id = s2.S2CellId.from_token(s2cell_token)
-    s2latlng = s2.S2LatLng.from_point(s2.S2Cell(s2cell_id).center())
-    latlngs.append((s2latlng.lat.degrees, s2latlng.lng.degrees))
+    s2cell_id = s2.CellId.from_token(_token_str(s2cell_token))
+    s2latlng = s2cell_id.to_lat_lng()
+    latlngs.append((s2latlng.lat().degrees, s2latlng.lng().degrees))
   return jnp.array(latlngs)
 
 
 def latlng_to_s2cell_token(
     latlngs: FloatArray['N 2'], level: int
-) -> Sequence[bytes]:
+) -> Sequence[str]:
   """Returns the s2cell token at the given level for the given latlng."""
   tokens = []
   for i in range(latlngs.shape[0]):
-    s2latlng = s2.S2LatLng.from_degrees(latlngs[i, 0], latlngs[i, 1])
-    s2cell_id = s2.S2CellId.from_lat_lng(s2latlng).parent_at_level(level)
-    tokens.append(s2cell_id.token())
+    s2latlng = s2.LatLng.from_degrees(
+        float(latlngs[i, 0]), float(latlngs[i, 1])
+    )
+    s2cell_id = s2.CellId.from_lat_lng(s2latlng).parent(level)
+    tokens.append(s2cell_id.to_token())
   return tokens
 
 
 def convert_s2cell_level(
-    s2cell_tokens: Sequence[bytes], level: int
-) -> Sequence[bytes]:
+    s2cell_tokens: Sequence[bytes | str], level: int
+) -> Sequence[str]:
   """Converts a list of s2cell tokens to a different level.
 
   Args:
@@ -76,14 +83,16 @@ def convert_s2cell_level(
   """
   new_tokens = set()
   for token in s2cell_tokens:
-    s2cell_id = s2.S2CellId.from_token(token)
-    if level < s2cell_id.level:
-      new_tokens.add(s2cell_id.parent_at_level(level).token())
-    elif level > s2cell_id.level:
-      for i in range(4 ** (level - s2cell_id.level)):
-        new_tokens.add(s2cell_id.child_begin_at_level(level).advance(i).token())
+    s2cell_id = s2.CellId.from_token(_token_str(token))
+    if level < s2cell_id.level():
+      new_tokens.add(s2cell_id.parent(level).to_token())
+    elif level > s2cell_id.level():
+      child = s2cell_id.child_begin(level)
+      for _ in range(4 ** (level - s2cell_id.level())):
+        new_tokens.add(child.to_token())
+        child = child.next()
     else:
-      new_tokens.add(token)
+      new_tokens.add(s2cell_id.to_token())
   return sorted(list(new_tokens))
 
 

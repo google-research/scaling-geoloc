@@ -33,3 +33,13 @@ scikit-learn>=1.6
 matplotlib>=3.5
 tqdm>=4.67
 pyyaml>=5.4
+
+# UniGeoCLIP downstream datasets / evals
+h5py>=3.10          # pv4ger + chesapeake .hdf5 readers
+rasterio>=1.3       # MDAS DSM/label GeoTIFF readers
+s2sphere>=0.2.5     # only the geo-localization retrieval eval
+
+# big_vision provides the SigLIP2 sv/aerial/text backbones, which the UniGeoCLIP
+# multimodal model imports. Like scenic it is a source-tree package — install
+# from git, or put a checkout on PYTHONPATH.
+big_vision @ git+https://github.com/google-research/big_vision.git

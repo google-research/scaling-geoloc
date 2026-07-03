@@ -349,6 +349,8 @@ def siglip(
   config.head_zeroinit = False
   config.patches = ml_collections.ConfigDict()
   config.patches.size = [int(patch), int(patch)]
+  # Load the pretrained SigLIP2 weights at init (set False to random-init).
+  config.load_pretrained = True
 
   config.name = 'siglip'
   return config.lock()
@@ -424,42 +426,4 @@ def downstream_eval(batch_size: int) -> ml_collections.ConfigDict:
   config.data.grain_num_threads = 16
   config.data.grain_num_threads_valid = 8
   config.data.preprocess = ml_collections.ConfigDict()
-  return config
-
-
-def cross_view_retrieval(
-    batch_size: int,
-    num_workers: int,
-    query: tuple[str, str, list[str]],  # pylint: disable=unused-argument
-    database: tuple[str, str, list[str]],
-    join_factor: float = -1.0,  # Do not join databases.
-    join_normalize: bool = False,
-) -> config_dict.ConfigDict:
-  """Returns a config for cross-view retrieval."""
-  config = retrieval(batch_size)
-  config.data.grain_num_workers_valid = num_workers
-  config.data.grain_num_workers = num_workers
-  config.method = 'encode_multiview'
-  config.method_db = 'encode_aerial'
-  query_dirname, query_split, query_locations = query
-  database_dirname, database_split, database_locations = database
-  config.data.dirname = query_dirname
-  config.data.locations.train = config.data.locations.valid = query_locations
-  config.data.train_split = config.data.valid_split = query_split
-  config.db_data = config_dict.ConfigDict()
-  config.db_data.dirname = database_dirname
-  config.db_data.locations = config_dict.ConfigDict()
-  config.db_data.locations.train = config.db_data.locations.valid = (
-      database_locations
-  )
-  config.db_data.train_split = config.db_data.valid_split = database_split
-  config.plot = True
-  config.db_data.preprocess = config_dict.ConfigDict()
-  config.db_data.preprocess.from_aerial = True
-
-  if join_factor > 0.0:
-    config.join_databases = True
-    config.join_factor = join_factor
-    config.db_from_model = 'build_s2cell_database'
-    config.join_normalize = join_normalize
   return config

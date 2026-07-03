@@ -39,9 +39,9 @@ import tensorflow_datasets as tfds
 from unigeoclip.scenic import datasets
 from unigeoclip.scenic.evals import classif_eval
 from unigeoclip.scenic.models import dpt
-from scaling_geoloc.scenic import types
-from scaling_geoloc.scenic.evals import base_eval
-from scaling_geoloc.scenic.models import base
+from scaling_geoloc import types
+from scaling_geoloc.evals import base_eval
+from scaling_geoloc.models import base
 
 partial = functools.partial
 
@@ -51,7 +51,6 @@ def get_all_representations(
     train_state: train_utils.TrainState,
     model: base.BaseModel,
     log_progress_interval: int = 10,
-    return_input: bool = False,
 ) -> Mapping[str, Any]:
   """Extracts representations for all samples in the iterator."""
 
@@ -70,7 +69,6 @@ def get_all_representations(
       train_state,
       pmapped_get_reps,
       log_progress_interval,
-      return_input=return_input,
   )
 
 
@@ -98,7 +96,7 @@ def get_dtp_metrics(
     num_classes: int = 10,
     n_epochs: int = 50,
 ) -> float:
-  """Computes linear probing metrics."""
+  """Trains a DPT segmentation head and returns its mean IoU."""
   dim = query_reps.shape[-1]
   vit_channels = [dim for _ in range(4)]
   post_process_channels = [128, 256, 512, dim]
@@ -157,8 +155,6 @@ def get_dtp_metrics(
     num_train_steps = 0
     for batch_tuple in train_iter:
       # --- Explicitly Structure and Shard the Batch ---
-      num_devices = jax.local_device_count()
-
       *input_maps, labels = batch_tuple
 
       # Shard the structured data
@@ -307,6 +303,7 @@ def compute_metrics(
     learning_rates: Sequence[float],
     batch_sizes: Sequence[int],
     normalize_output_embeddings: bool = True,
+    n_epochs: int = 50,
 ) -> dict[str, float]:
   """Computes segmentation metrics."""
   metrics = {}
@@ -346,6 +343,7 @@ def compute_metrics(
           batch_size=batch_size,
           learning_rate=learning_rate,
           num_classes=num_classes,
+          n_epochs=n_epochs,
       )
       accs.append(acc)
   metrics['DTP'] = np.max(accs)
@@ -373,7 +371,6 @@ class SegmentationEvaluation(base_eval.BaseEval):
   def get_database_representations(
       self,
       train_state: train_utils.TrainState,
-      return_input: bool = False,
   ) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
     """Extracts representations for all samples in the iterator."""
     logging.info('Extracting features for train set (database).')
@@ -381,7 +378,6 @@ class SegmentationEvaluation(base_eval.BaseEval):
         self.train_iter(),
         train_state,
         self.model,
-        return_input=return_input,
         log_progress_interval=self.config.get('log_progress_interval', 10),
     )
 
@@ -390,7 +386,6 @@ class SegmentationEvaluation(base_eval.BaseEval):
         self.valid_iter(),
         train_state,
         self.model,
-        return_input=return_input,
         log_progress_interval=self.config.get('log_progress_interval', 10),
     )
 
@@ -423,6 +418,7 @@ class SegmentationEvaluation(base_eval.BaseEval):
         normalize_output_embeddings=True,
         batch_sizes=self.config.batch_sizes_eval,
         learning_rates=self.config.learning_rates,
+        n_epochs=self.config.get('n_epochs', 50),
     )
 
     return {}, eval_metrics, {}

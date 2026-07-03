@@ -25,7 +25,7 @@ import apache_beam as beam
 import fancyflags as ff
 import tensorflow_datasets as tfds
 
-from unigeoclip.data import export
+from unigeoclip.internal import export
 from google3.location.visualmapping.experimental.fomo.data import data_utils
 from scaling_geoloc.data import pipeline_steps
 from google3.pipeline.flume.py import runner

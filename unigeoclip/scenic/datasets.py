@@ -28,10 +28,13 @@ import jax.numpy as jnp
 import ml_collections
 import numpy as np
 import rasterio
+import tensorflow_datasets as tfds
 
-from scaling_geoloc.scenic import datasets
-from scaling_geoloc.scenic import types
-from google3.pyglib import gfile
+from scaling_geoloc.data import datasets
+from scaling_geoloc.utils import distributed
+from scaling_geoloc import types
+from unigeoclip.data import io_utils as gfile
+from unigeoclip.data.multimodal_dummy_source import MultiModalDummyDataSource
 
 
 class Pv4GerDataSource(grain.RandomAccessDataSource):
@@ -343,6 +346,99 @@ def create_downstream_dataset(
   )
 
 
+def create_multimodal_dataset(
+    dataset_config: ml_collections.ConfigDict,
+    batch_size: int,
+    batch_size_eval: int,
+    seed: int,
+    meta_data: types.DataDict | None = None,
+) -> types.Dataset:
+  """Create the multimodal contrastive (sv/aerial/dsm/text/latlng) dataset.
+
+  Two backends:
+
+  * ``location`` unset (default) -> the procedural ``MultiModalDummyDataSource``
+    so training runs on CPU without any files.
+  * ``location`` set -> read the 5-modality ArrayRecord shards written by
+    ``unigeoclip.data.generate_fake_multimodal_data`` (or any real dataset with
+    the same TFDS spec) from ``<data_dir>/<location>``.
+  """
+  process_batch_size = distributed.get_process_batch_size(batch_size)
+  process_batch_size_eval = distributed.get_process_batch_size(batch_size_eval)
+
+  location = dataset_config.get('location')
+  if location:
+    loc_dir = os.path.join(dataset_config.data_dir, location)
+    builder = tfds.builder_from_directory(loc_dir)
+    train_data_source = builder.as_data_source(
+        dataset_config.get('train_split', 'train')
+    )
+    valid_data_source = builder.as_data_source(
+        dataset_config.get('valid_split', 'valid')
+    )
+  else:
+    source_kwargs = dict(
+        num_views=dataset_config.get('num_views', 1),
+        sv_image_size=dataset_config.get('sv_image_size', 224),
+        aerial_image_size=dataset_config.get('aerial_image_size', 256),
+        dsm_image_size=dataset_config.get('dsm_image_size', 256),
+        text_dim=dataset_config.get('text_dim', 768),
+    )
+    train_data_source = MultiModalDummyDataSource(
+        num_examples=dataset_config.get('num_train_examples', 1024),
+        **source_kwargs,
+    )
+    valid_data_source = MultiModalDummyDataSource(
+        num_examples=dataset_config.get('num_valid_examples', 256),
+        **source_kwargs,
+    )
+
+  dummy_batch_fn = functools.partial(
+      datasets.get_dummy_batch, train_data_source, (), batch_size, seed=999
+  )
+
+  meta_data = {
+      'num_train_examples': len(train_data_source),
+      'num_valid_examples': len(valid_data_source),
+      'dummy_batch_fn': dummy_batch_fn,
+      **(meta_data if meta_data is not None else {}),
+  }
+
+  def _loader(source, shuffle, bs, workers):
+    return datasets.dataloader_provider_fn(
+        source=source,
+        shuffle=shuffle,
+        seed=seed,
+        shard_options=grain.ShardByJaxProcess(drop_remainder=True),
+        drop_remainder=True,
+        transformations=(),
+        batch_size=bs,
+        worker_count=workers,
+        read_options=grain.ReadOptions(
+            prefetch_buffer_size=dataset_config.grain_prefetch_buffer_size,
+            num_threads=dataset_config.grain_num_threads,
+        ),
+    )
+
+  return types.Dataset(
+      train_iter=_loader(
+          train_data_source,
+          dataset_config.shuffle_train,
+          process_batch_size,
+          dataset_config.grain_num_workers,
+      ),
+      valid_iter=_loader(
+          valid_data_source,
+          dataset_config.shuffle_valid,
+          process_batch_size_eval,
+          dataset_config.grain_num_workers_valid,
+      ),
+      meta_data=meta_data,
+      train_ds=train_data_source,
+      valid_ds=valid_data_source,
+  )
+
+
 def build_dataset(
     dataset_config: ml_collections.ConfigDict,
     batch_size: int,
@@ -356,15 +452,6 @@ def build_dataset(
     return create_downstream_dataset(
         dataset_config, dataset_name, batch_size, batch_size_eval, seed
     )
-  else:
-    transformations, meta_data = datasets.transformations_from_config(
-        dataset_config, meta_data
-    )
-    return datasets.create_dataset(
-        dataset_config,
-        batch_size,
-        batch_size_eval,
-        seed,
-        transformations=transformations,
-        meta_data=meta_data,
-    )
+  return create_multimodal_dataset(
+      dataset_config, batch_size, batch_size_eval, seed, meta_data=meta_data
+  )
