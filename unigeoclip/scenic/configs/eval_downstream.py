@@ -106,7 +106,7 @@ def _pdfm() -> ml_collections.ConfigDict:
   cfg.batch_size_eval = 256
   cfg.eval_interval = 1_000_000
   cfg.data = ml_collections.ConfigDict()
-  cfg.data.data_dir = f'{_DATA_DIR}/pdfm'  # contains pdfm_benchmark.csv
+  cfg.data.data_dir = f'{_DATA_DIR}/pdfm'  # contains conus27.csv / pdfm_benchmark.csv
   return cfg
 
 

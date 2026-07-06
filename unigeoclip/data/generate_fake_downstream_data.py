@@ -168,20 +168,31 @@ def _write_geotiff(path: str, array: np.ndarray) -> None:
 def _write_pdfm(
     out_dir: str, num_regions: int, num_targets: int, rng: np.random.Generator
 ):
-  """Region-level (latlng -> socioeconomic targets) regression CSV."""
+  """Region-level (latlng -> socioeconomic targets) regression CSV.
+
+  Mirrors the public PDFM ``conus27.csv`` schema: ``place``/``county``/``state``
+  metadata, a ``latitude``/``longitude`` centroid, numeric target columns, and an
+  ignored ``*_split`` column.
+  """
   root = os.path.join(out_dir, 'pdfm')
   os.makedirs(root, exist_ok=True)
   data = {
-      'place': [f'zcta_{i:05d}' for i in range(num_regions)],
-      'lat': rng.uniform(-60.0, 70.0, num_regions).astype(np.float32),
-      'lng': rng.uniform(-180.0, 180.0, num_regions).astype(np.float32),
+      'place': [f'zip/{i:05d}' for i in range(num_regions)],
+      'county': ['Example County'] * num_regions,
+      'state': ['CA'] * num_regions,
+      'latitude': rng.uniform(-60.0, 70.0, num_regions).astype(np.float32),
+      'longitude': rng.uniform(-180.0, 180.0, num_regions).astype(np.float32),
   }
   for t in range(num_targets):
     col = rng.standard_normal(num_regions).astype(np.float32)
     # Sprinkle a few NaNs to exercise the per-region masking.
     col[rng.random(num_regions) < 0.05] = np.nan
     data[f'target_{t}'] = col
-  pd.DataFrame(data).to_csv(os.path.join(root, 'pdfm_benchmark.csv'), index=False)
+  # Official split column (ignored by the eval, which uses its own split).
+  data['imputation_split'] = rng.choice(['train', 'valid', 'test'], num_regions)
+  pd.DataFrame(data).to_csv(
+      os.path.join(root, 'pdfm_benchmark.csv'), index=False
+  )
   print(f'Wrote PDFM fake data to {root}')
 
 
