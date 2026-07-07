@@ -20,7 +20,7 @@ projection, and the data is the procedural ``MultiModalDummyDataSource`` so the
 whole pipeline runs on CPU. Override any field from the command line, e.g.::
 
     python -m unigeoclip.train \
-        --config=unigeoclip/scenic/configs/contrastive_merge.py \
+        --config=unigeoclip/configs/contrastive_merge.py \
         --workdir=/tmp/wd \
         --config.num_training_steps=1000 \
         --config.batch_size_per_device=64
@@ -33,7 +33,7 @@ from collections.abc import Sequence
 import ml_collections
 from ml_collections import config_dict
 
-from unigeoclip.scenic.configs import defaults
+from unigeoclip.configs import defaults
 
 _HIDDEN = {'tiny': 64, 'Ti': 192, 'S': 384, 'B': 768, 'L': 1024}
 _LAYERS = {'tiny': 2, 'Ti': 12, 'S': 12, 'B': 12, 'L': 24}

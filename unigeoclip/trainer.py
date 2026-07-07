@@ -14,58 +14,38 @@
 
 """Trainer for UniGeoCLIP models.
 
-The heavy lifting (train loop, train/eval step, checkpointing, optimizer setup)
-is shared with the public ``scaling_geoloc.trainer``. This module only rebinds
-the two places that look up models/evals by name so they resolve against the
-UniGeoCLIP registry (``unigeoclip.scenic.load``) instead of the geo-localization
-one.
+The train loop, train/eval step, checkpointing, optimizer setup and the
+``Experiment`` class are shared with the public ``scaling_geoloc.trainer`` and
+re-exported here, so callers can use ``trainer.<symbol>`` regardless of which
+package they came from. The only UniGeoCLIP-specific piece is
+``reload_experiment``, which resolves model names against the UniGeoCLIP
+registry (``unigeoclip.load``) rather than the geo-localization one.
 """
 
-from collections.abc import Mapping
 import os
 
-from absl import logging
 import jax.numpy as jnp
 import ml_collections
 from scenic.train_lib import pretrain_utils as scenic_pretrain_utils
 from scenic.train_lib import train_utils
 
 from scaling_geoloc import trainer as _base
-from scaling_geoloc.evals import base_eval
 from scaling_geoloc.models import base
 from scaling_geoloc.utils import io
-from unigeoclip.scenic import load
+from unigeoclip import load
 
-# Re-export the shared, registry-independent helpers so callers can keep using
-# ``trainer.<symbol>`` regardless of which trainer module they import.
+# Re-export the shared trainer API so callers can use ``trainer.<symbol>``
+# regardless of which trainer module they import. ``Experiment`` needs no
+# UniGeoCLIP-specific behaviour: its in-process test evals resolve against
+# ``scaling_geoloc.load``, and the public release runs evals out-of-process via
+# ``unigeoclip.eval`` (see ``reload_experiment`` for the one registry-bound bit).
+Experiment = _base.Experiment
 initialize_model = _base.initialize_model
 reduce_metrics = _base.reduce_metrics
 train_step = _base.train_step
 eval_step = _base.eval_step
 optimizer_from_config = _base.optimizer_from_config
 init_from_pretrain_state = _base.init_from_pretrain_state
-
-
-class Experiment(_base.Experiment):
-  """Public ``scaling_geoloc`` Experiment bound to the UniGeoCLIP registry."""
-
-  def create_test_evals(
-      self, eval_configs: Mapping[str, ml_collections.ConfigDict]
-  ) -> Mapping[str, base_eval.BaseEval]:
-    """Creates in-process test evals using the UniGeoCLIP eval registry."""
-    test_evals = {}
-    for eval_name, test_eval_config in eval_configs.items():
-      if self.lead_host:
-        logging.info(
-            'Adding test eval: %s every %d steps.',
-            eval_name,
-            test_eval_config.eval_interval,
-        )
-      test_evals[eval_name] = load.get_eval(test_eval_config.eval_name)(
-          self.model,
-          test_eval_config,
-      )
-    return test_evals
 
 
 def reload_experiment(

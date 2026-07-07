@@ -33,7 +33,7 @@ from jax import lax
 import jax.numpy as jnp
 import jaxtyping as jt
 
-from unigeoclip.scenic.models.utils import rope
+from unigeoclip.models.utils import rope
 
 
 def get_positions(

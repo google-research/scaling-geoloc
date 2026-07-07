@@ -19,11 +19,11 @@ from typing import Any, Final, Mapping, Sequence
 
 import ml_collections
 
-from unigeoclip.scenic.configs import defaults
-from unigeoclip.scenic.configs import helper_evals as evals
+from unigeoclip.configs import defaults
+from unigeoclip.configs import helper_evals as evals
 
 _PATH: Final[str] = (
-    'unigeoclip.scenic.configs'
+    'unigeoclip.configs'
 )
 _MODELS: Mapping[str, str] = {
     'sv': 'siglip_sv',

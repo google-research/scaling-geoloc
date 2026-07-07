@@ -36,9 +36,9 @@ from scenic.train_lib import train_utils
 import tensorflow as tf
 import tensorflow_datasets as tfds
 
-from unigeoclip.scenic import datasets
-from unigeoclip.scenic.evals import classif_eval
-from unigeoclip.scenic.models import dpt
+from unigeoclip import datasets
+from unigeoclip.evals import classif_eval
+from unigeoclip.models import dpt
 from scaling_geoloc import types
 from scaling_geoloc.evals import base_eval
 from scaling_geoloc.models import base

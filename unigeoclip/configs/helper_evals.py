@@ -16,7 +16,7 @@
 
 from ml_collections import config_dict
 
-from unigeoclip.scenic.configs import defaults
+from unigeoclip.configs import defaults
 
 
 def cross_view_retrieval(

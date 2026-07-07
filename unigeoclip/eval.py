@@ -33,8 +33,8 @@ import ml_collections
 from scenic import app
 from scenic.train_lib import train_utils
 
-from unigeoclip.scenic import load
-from unigeoclip.scenic import trainer
+from unigeoclip import load
+from unigeoclip import trainer
 
 
 def write_note(note: str):

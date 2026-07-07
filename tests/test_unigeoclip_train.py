@@ -26,8 +26,8 @@ import pytest
 from scenic.dataset_lib import dataset_utils
 
 from unigeoclip.data.multimodal_dummy_source import MultiModalDummyDataSource
-from unigeoclip.scenic.models.contrastive_merge import ContrastiveModel
-from unigeoclip.scenic import trainer
+from unigeoclip.models.contrastive_merge import ContrastiveModel
+from unigeoclip import trainer
 
 # Tiny so the test runs fast on CPU.
 EMB_DIM = 32
@@ -200,7 +200,7 @@ def test_generate_and_load_five_modalities(tmp_path):
   from unigeoclip.data.generate_fake_multimodal_data import (  # noqa: E501
       write_multimodal_dataset,
   )
-  from unigeoclip.scenic import datasets
+  from unigeoclip import datasets
 
   write_multimodal_dataset(
       str(tmp_path / 'mm'),

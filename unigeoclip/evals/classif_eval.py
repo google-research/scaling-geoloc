@@ -34,8 +34,8 @@ from scenic.train_lib import train_utils
 import tensorflow as tf
 from tensorflow.keras import optimizers
 
-from unigeoclip.scenic import datasets
-from unigeoclip.scenic.models import contrastive_merge
+from unigeoclip import datasets
+from unigeoclip.models import contrastive_merge
 from scaling_geoloc import types
 from scaling_geoloc.evals import base_eval
 from scaling_geoloc.models import base

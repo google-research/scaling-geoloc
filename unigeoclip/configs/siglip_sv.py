@@ -12,28 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Config file for a ViT backbone for dsm modlaity."""
+"""Config file for a pretrained SigLIP2 backbone for sv modality."""
 
 import ml_collections
 
-from unigeoclip.scenic.configs import defaults
-
-_SIZES = {'Ti': 192, 'S': 384, 'B': 768, 'L': 1024, 'So400m': 1152, 'H': 1280}
+from unigeoclip.configs import defaults
 
 
 def get_config(
     model_size: str = 'B',
 ) -> ml_collections.ConfigDict:
-  """Returns the config of the DSM ViT."""
-  config = defaults.vit(
+  """Returns the config of the siglip backbone."""
+  patch = 14 if model_size == 'So400m' else 16
+  config = defaults.siglip(
       version=model_size,
-      patch=16,
-      output_dim=_SIZES[model_size],
-      pooling='tok',
-      img_size=256,
+      patch=patch,
   ).unlock()
 
-  config.head = 'linear'
-  config.imagenet_normalization = False
+  if model_size == 'B':
+    config.model_name = 'SigLIP2 B/16 224'
+  elif model_size == 'So400m':
+    config.model_name = 'SigLIP2 So400m/14 224'
+  else:
+    raise ValueError(f'Unsupported model size: {model_size}')
 
   return config

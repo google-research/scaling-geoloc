@@ -14,8 +14,8 @@
 
 """Pretrained-parameter loading for the public release.
 
-Maps the internal ``scaling_geoloc.scenic.load_params`` API used by
-``unigeoclip/scenic/models/vit.py`` onto the flat-``.npz`` convention used by
+Loads a pretrained ViT checkpoint for ``unigeoclip/models/vit.py`` from the
+flat-``.npz`` convention used by
 ``scaling_geoloc.models.vit.ViTBackbone.maybe_load_params`` (one entry per
 parameter, slash-separated keys, produced by ``convert_pretrained.py``).
 

@@ -13,7 +13,7 @@ street-view (`sv`), aerial RGB, DSM height (`dsm`), text, and location (`latlng`
 — and a downstream evaluation harness.
 
 The full train + eval pipeline runs on CPU against procedurally generated fake
-data, so it is reproducible without any private data or internal infrastructure.
+data, so it is reproducible without any private data.
 
 ## Setup
 
@@ -38,13 +38,13 @@ python -m unigeoclip.data.generate_fake_downstream_data --output_dir=datasets
 
 # train (procedural fake data, writes a checkpoint to --workdir)
 python -m unigeoclip.train \
-    --config=unigeoclip/scenic/configs/contrastive_merge.py:tiny \
+    --config=unigeoclip/configs/contrastive_merge.py:tiny \
     --workdir=/tmp/uni_run --config.num_training_steps=20 \
     --config.batch_size_per_device=4 --config.checkpoint_interval=20
 
 # evaluate that checkpoint
 python -m unigeoclip.eval \
-    --config=unigeoclip/scenic/configs/eval_downstream.py \
+    --config=unigeoclip/configs/eval_downstream.py \
     --workdir=/tmp/uni_eval --config.experiment=/tmp/uni_run
 ```
 
@@ -55,7 +55,7 @@ The `tiny` (ViT) checkpoint covers pv4ger + MDAS + PDFM; drop `chesapeake` from
 
 ```bash
 python -m unigeoclip.train \
-    --config=unigeoclip/scenic/configs/contrastive_merge.py:<preset> \
+    --config=unigeoclip/configs/contrastive_merge.py:<preset> \
     --workdir=/tmp/uni_run
 ```
 
@@ -84,8 +84,26 @@ checkpoint, pulling features through the model's encoder interface:
 (chesapeake's DPT head needs the SigLIP tower's multi-depth dense features). Edit
 `eval_downstream.py`'s `get_config()` to keep the tasks your checkpoint supports.
 To evaluate your own encoder, implement these methods on a
-`scaling_geoloc.models.base.BaseModel` and register it in `scenic/load.py`
+`scaling_geoloc.models.base.BaseModel` and register it in `load.py`
 (`models/contrastive_merge.py` is the reference).
+
+### Geolocation retrieval
+
+`configs/eval_geolocation_retrieval.py` scores cross-modal retrieval (street-view
+↔ aerial ↔ location) and Haversine geolocation over the procedural multimodal
+data, so it needs a `contrastive_merge` checkpoint with the `latlng` modality:
+
+```bash
+python -m unigeoclip.eval \
+    --config=unigeoclip/configs/eval_geolocation_retrieval.py \
+    --workdir=/tmp/eval_geoloc --config.experiment=/tmp/uni_run
+```
+
+`cell_codes` are grid-cell sizes in degrees: each bins the evaluation locations
+onto a regular lat/lng grid and retrieves against the distinct cell centers (a
+coarser grid → a smaller, coarser gallery). Set
+`--config.test_evals.geoloc.data.location` to read real 5-modality shards instead
+of the dummy source.
 
 ### Real datasets
 

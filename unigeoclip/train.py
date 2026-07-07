@@ -21,9 +21,9 @@ import jax.numpy as jnp
 import ml_collections
 from scenic import app
 
-from unigeoclip.scenic import datasets
-from unigeoclip.scenic import load
-from unigeoclip.scenic import trainer
+from unigeoclip import datasets
+from unigeoclip import load
+from unigeoclip import trainer
 
 
 def main(

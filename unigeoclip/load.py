@@ -46,7 +46,7 @@ def get_class(basepath: str, modulename: str, classname: str) -> Any:
 def get_model(name: str) -> Type[base.BaseModel]:
   """Get a top-level model by name."""
   basepath = (
-      'unigeoclip.scenic.models.{}'
+      'unigeoclip.models.{}'
   )
   return get_class(basepath, *MODELS[name])
 
@@ -54,6 +54,6 @@ def get_model(name: str) -> Type[base.BaseModel]:
 def get_eval(name: str) -> Type[base_eval.BaseEval]:
   """Get a top-level eval by name."""
   basepath = (
-      'unigeoclip.scenic.evals.{}'
+      'unigeoclip.evals.{}'
   )
   return get_class(basepath, *EVALS[name])

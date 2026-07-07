@@ -33,7 +33,6 @@ import tensorflow_datasets as tfds
 from scaling_geoloc.data import datasets
 from scaling_geoloc.utils import distributed
 from scaling_geoloc import types
-from unigeoclip.data import io_utils as gfile
 from unigeoclip.data.multimodal_dummy_source import MultiModalDummyDataSource
 
 
@@ -52,12 +51,12 @@ class Pv4GerDataSource(grain.RandomAccessDataSource):
     self._metadata = []
 
     partition_path = os.path.join(self.data_path, 'default_partition.json')
-    with gfile.Open(partition_path, 'r') as file:
+    with open(partition_path, 'r') as file:
       partition = json.load(file)[split]
 
     labels_path = os.path.join(self.data_path, 'label_map.json')
 
-    with gfile.Open(labels_path, 'r') as file:
+    with open(labels_path, 'r') as file:
       self.labels_map = json.load(file)
 
     # Create a flat list of metadata for every single item in the dataset.
@@ -89,8 +88,8 @@ class Pv4GerDataSource(grain.RandomAccessDataSource):
     item_meta = self._metadata[index]
     file_path = item_meta['file_path']
 
-    with gfile.GFile(file_path, 'r') as gfile_obj:
-      with h5py.File(gfile_obj, 'r') as hf:
+    with open(file_path, 'rb') as file:
+      with h5py.File(file, 'r') as hf:
         band_names = ['Red', 'Green', 'Blue']
         bands = [jnp.array(hf[band_name][:]) for band_name in band_names]
 
@@ -116,7 +115,7 @@ class ChesapeakeDataSource(grain.RandomAccessDataSource):
     self._metadata = []
 
     partition_path = os.path.join(self.data_path, 'default_partition.json')
-    with gfile.Open(partition_path, 'r') as file:
+    with open(partition_path, 'r') as file:
       partition = json.load(file)[split]
 
     for filename in partition:
@@ -144,8 +143,8 @@ class ChesapeakeDataSource(grain.RandomAccessDataSource):
     item_meta = self._metadata[index]
     file_path = item_meta['file_path']
 
-    with gfile.GFile(file_path, 'r') as gfile_obj:
-      with h5py.File(gfile_obj, 'r') as hf:
+    with open(file_path, 'rb') as file:
+      with h5py.File(file, 'r') as hf:
         red_band = jnp.array(hf['Red'][:])
         blue_band = jnp.array(hf['Blue'][:])
         green_band = jnp.array(hf['Green'][:])
@@ -179,7 +178,7 @@ class MDASDataSource(grain.RandomAccessDataSource):
 
     name = partition[split][:-2] + partition[split][-1]
     label_path = os.path.join(self.data_path, f'osm_landuse_{name}.tif')
-    with gfile.Open(label_path, 'rb') as file:
+    with open(label_path, 'rb') as file:
       with rasterio.open(file) as src:
         labels_map = src.read(1)
 
@@ -205,7 +204,7 @@ class MDASDataSource(grain.RandomAccessDataSource):
     self.labels_map = labels_map
 
     file_path = os.path.join(self.data_path, f'3K_DSM_{name}.tif')
-    with gfile.Open(file_path, 'rb') as file:
+    with open(file_path, 'rb') as file:
       with rasterio.open(file) as src:
         self.dsm_map = src.read(1)
 

@@ -25,10 +25,10 @@ import jax.scipy as jsp
 import jaxtyping as jt
 import ml_collections
 
-from unigeoclip.scenic.models import location_encoder
-from unigeoclip.scenic.models import siglip
-from unigeoclip.scenic.models import siglip_text
-from unigeoclip.scenic.models import vit
+from unigeoclip.models import location_encoder
+from unigeoclip.models import siglip
+from unigeoclip.models import siglip_text
+from unigeoclip.models import vit
 from unigeoclip.utils import augmentations
 from scaling_geoloc import types
 from scaling_geoloc.models import base

@@ -23,16 +23,18 @@ documented encoder interface (``get_aerial_embeddings`` /
 import numpy as np
 import jax
 import ml_collections
+from ml_collections import config_dict
 import pytest
 
 from unigeoclip.data import generate_fake_downstream_data as gen
-from unigeoclip.scenic.evals.classif_eval import ClassificationEvaluation
-from unigeoclip.scenic.evals.dsm_eval import DsmSegmentationEvaluation
-from unigeoclip.scenic.evals.pdfm_eval import PDFMEvaluation
-from unigeoclip.scenic.evals.semseg_eval import SegmentationEvaluation
-from unigeoclip.scenic.configs import defaults
-from unigeoclip.scenic.models.contrastive_merge import ContrastiveModel
-from unigeoclip.scenic import trainer
+from unigeoclip.evals.classif_eval import ClassificationEvaluation
+from unigeoclip.evals.dsm_eval import DsmSegmentationEvaluation
+from unigeoclip.evals.geolocation_retrieval import RetrievalEvaluation
+from unigeoclip.evals.pdfm_eval import PDFMEvaluation
+from unigeoclip.evals.semseg_eval import SegmentationEvaluation
+from unigeoclip.configs import defaults
+from unigeoclip.models.contrastive_merge import ContrastiveModel
+from unigeoclip import trainer
 from tests import test_unigeoclip_train as train_test
 
 
@@ -158,6 +160,48 @@ def test_mdas_dsm_segmentation(tmp_path):
   cfg = _eval_config(_data_config(out, 'mdas', 'valid'), num_classes=13)
   _, metrics, _ = DsmSegmentationEvaluation(model, cfg).evaluate(exp.train_state)
   assert 'mIoU' in metrics
+
+
+def _geoloc_data_config() -> ml_collections.ConfigDict:
+  cfg = ml_collections.ConfigDict()
+  cfg.location = config_dict.placeholder(str)  # unset -> dummy multimodal source
+  cfg.num_train_examples = 8
+  cfg.num_valid_examples = 8
+  cfg.num_views = 1
+  cfg.sv_image_size = train_test.IMAGE_SIZE
+  cfg.aerial_image_size = train_test.IMAGE_SIZE
+  cfg.dsm_image_size = train_test.IMAGE_SIZE
+  cfg.text_dim = train_test.TEXT_DIM
+  cfg.shuffle_train = False
+  cfg.shuffle_valid = False
+  cfg.grain_num_workers = 0
+  cfg.grain_num_workers_valid = 0
+  cfg.grain_num_threads = 1
+  cfg.grain_prefetch_buffer_size = 1
+  return cfg
+
+
+def test_geolocation_retrieval(vit_aerial_state):
+  """Cross-modal retrieval + Haversine geolocation on the dummy multimodal data.
+
+  Exercises the s2-free grid gallery: ``cell_codes`` are grid-cell sizes in
+  degrees, so ``latlng_grid_gallery`` builds the candidate locations without any
+  S2 dependency.
+  """
+  model, state = vit_aerial_state
+  cfg = ml_collections.ConfigDict()
+  cfg.eval_name = 'geolocation_retrieval'
+  cfg.multimodal_dummy = True
+  cfg.batch_size_eval = 4  # divisible by the 2 test devices
+  cfg.log_progress_interval = 100
+  cfg.cell_codes = [10.0]  # grid-cell size in degrees
+  cfg.data = _geoloc_data_config()
+
+  _, metrics, _ = RetrievalEvaluation(model, cfg).evaluate(state)
+  # Full-set cross-modal retrieval metric ...
+  assert any('sv-aerial_recall' in k for k in metrics)
+  # ... and the grid-gallery geolocation (Haversine) metric.
+  assert any(k.startswith('cell_codes_10.0') for k in metrics)
 
 
 def test_pdfm_regression(tmp_path):

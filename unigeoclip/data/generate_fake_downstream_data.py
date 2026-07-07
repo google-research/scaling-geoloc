@@ -15,7 +15,7 @@
 """Generate tiny fake pv4ger / chesapeake / MDAS datasets for the downstream evals.
 
 The files match exactly the on-disk layout the data sources in
-``unigeoclip/scenic/datasets.py`` expect, so the classification and segmentation
+``unigeoclip/datasets.py`` expect, so the classification and segmentation
 evals run on CPU without the real datasets:
 
   <out>/pv4ger_classification/

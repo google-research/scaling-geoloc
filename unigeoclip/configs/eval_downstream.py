@@ -17,11 +17,11 @@
 Evaluates one trained checkpoint (``config.experiment``) on every task whose
 encoder method its model implements (classification, aerial/DSM segmentation and
 location regression). The checkpoint's model must implement the encoder interface
-(see ``unigeoclip/scenic/models/contrastive_merge.py``); keep only the ``test_evals``
+(see ``unigeoclip/models/contrastive_merge.py``); keep only the ``test_evals``
 your checkpoint supports (see the support matrix in the README):
 
     python -m unigeoclip.eval \
-        --config=unigeoclip/scenic/configs/eval_downstream.py \
+        --config=unigeoclip/configs/eval_downstream.py \
         --workdir=/tmp/eval \
         --config.experiment=/path/to/checkpoint
 

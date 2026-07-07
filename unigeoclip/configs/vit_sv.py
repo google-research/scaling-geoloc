@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Config file for a ViT backbone for aerial modlaity."""
+"""Config file for a ViT backbone for SV modality."""
 
 import ml_collections
 
-from unigeoclip.scenic.configs import defaults
+from unigeoclip.configs import defaults
 
 _SIZES = {'Ti': 192, 'S': 384, 'B': 768, 'L': 1024, 'H': 1280}
 
@@ -30,10 +30,8 @@ def get_config(
       patch=16,
       output_dim=_SIZES[model_size],
       pooling='tok',
-      img_size=256,
   ).unlock()
 
   config.head = 'linear'
-  config.imagenet_normalization = False
 
   return config

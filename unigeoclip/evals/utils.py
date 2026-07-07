@@ -14,7 +14,6 @@
 
 """Utility functions for evals."""
 
-from collections.abc import Sequence
 from typing import Any, TypeAlias
 
 from etils.array_types import FloatArray
@@ -26,74 +25,31 @@ from scenic.dataset_lib import dataset_utils
 from scenic.train_lib import train_utils
 
 from scaling_geoloc.models import base
-# Public release: the pip ``s2sphere`` package replaces the internal s2 library.
-import s2sphere as s2
 
 Predictions: TypeAlias = FloatArray['... D']
 
 
-def _token_str(token: bytes | str) -> str:
-  return token.decode('utf-8') if isinstance(token, bytes) else token
+def latlng_grid_gallery(
+    latlngs: FloatArray['N 2'], cell_size_deg: float
+) -> FloatArray['M 2']:
+  """Builds a gallery of candidate locations from a regular lat/lng grid.
 
-
-def s2cell_token_to_latlng(
-    s2cell_tokens: Sequence[bytes | str],
-) -> FloatArray['N 2']:
-  """Returns the latlng of the center of the s2cell.
-
-  Args:
-    s2cell_tokens: The s2cell token list.
-
-  Returns:
-    A tuple containing the latitude and longitude of the center of the s2cell.
-  """
-  latlngs = []
-  for s2cell_token in s2cell_tokens:
-    s2cell_id = s2.CellId.from_token(_token_str(s2cell_token))
-    s2latlng = s2cell_id.to_lat_lng()
-    latlngs.append((s2latlng.lat().degrees, s2latlng.lng().degrees))
-  return jnp.array(latlngs)
-
-
-def latlng_to_s2cell_token(
-    latlngs: FloatArray['N 2'], level: int
-) -> Sequence[str]:
-  """Returns the s2cell token at the given level for the given latlng."""
-  tokens = []
-  for i in range(latlngs.shape[0]):
-    s2latlng = s2.LatLng.from_degrees(
-        float(latlngs[i, 0]), float(latlngs[i, 1])
-    )
-    s2cell_id = s2.CellId.from_lat_lng(s2latlng).parent(level)
-    tokens.append(s2cell_id.to_token())
-  return tokens
-
-
-def convert_s2cell_level(
-    s2cell_tokens: Sequence[bytes | str], level: int
-) -> Sequence[str]:
-  """Converts a list of s2cell tokens to a different level.
+  Each input lat/lng is binned onto a regular grid with ``cell_size_deg``
+  spacing, and the centers of the distinct occupied cells are returned as
+  candidate locations to retrieve against. Coarser ``cell_size_deg`` yields a
+  smaller, coarser gallery -- the resolution knob for the geolocation metric.
 
   Args:
-    s2cell_tokens: The s2cell token list.
-    level: The target level.
+    latlngs: Observed ``(latitude, longitude)`` pairs, in degrees.
+    cell_size_deg: Grid cell size in degrees.
 
   Returns:
-    A list of s2cell tokens at the target level.
+    The distinct grid-cell centers, in degrees.
   """
-  new_tokens = set()
-  for token in s2cell_tokens:
-    s2cell_id = s2.CellId.from_token(_token_str(token))
-    if level < s2cell_id.level():
-      new_tokens.add(s2cell_id.parent(level).to_token())
-    elif level > s2cell_id.level():
-      child = s2cell_id.child_begin(level)
-      for _ in range(4 ** (level - s2cell_id.level())):
-        new_tokens.add(child.to_token())
-        child = child.next()
-    else:
-      new_tokens.add(s2cell_id.to_token())
-  return sorted(list(new_tokens))
+  latlngs = np.asarray(latlngs)
+  cell_indices = np.floor(latlngs / cell_size_deg)
+  centers = (np.unique(cell_indices, axis=0) + 0.5) * cell_size_deg
+  return jnp.asarray(centers, dtype=jnp.float32)
 
 
 def get_distance_metrics(

@@ -30,13 +30,13 @@ import numpy as np
 from scenic.dataset_lib import dataset_utils
 from scenic.train_lib import train_utils
 
-from unigeoclip.scenic.evals import utils
-from unigeoclip.scenic.models import contrastive_merge
+from unigeoclip import datasets as multimodal_datasets
+from unigeoclip.evals import utils
+from unigeoclip.models import contrastive_merge
 from scaling_geoloc.data import datasets
 from scaling_geoloc import types
 from scaling_geoloc.evals import base_eval
 from scaling_geoloc.models import base
-from scaling_geoloc.utils import io as lama_io
 from scaling_geoloc.utils import geo
 from scaling_geoloc.utils import misc
 
@@ -261,17 +261,27 @@ class RetrievalEvaluation(base_eval.BaseEval):
   def __init__(self, model: base.BaseModel, config: ml_collections.ConfigDict):
     self.config = config
     self.model = model
-    transformations, metadata = datasets.transformations_from_config(
-        config.data
-    )
-    self._dataset = datasets.create_dataset(
-        config.data,
-        batch_size=config.batch_size_eval,
-        batch_size_eval=config.batch_size_eval,
-        transformations=transformations,
-        meta_data=metadata,
-        seed=155,
-    )
+    if config.get('multimodal_dummy', False):
+      # Reproducible CPU path: sv/aerial/dsm/latlng from the procedural
+      # MultiModalDummyDataSource, with query and database the same set.
+      self._dataset = multimodal_datasets.create_multimodal_dataset(
+          config.data,
+          batch_size=config.batch_size_eval,
+          batch_size_eval=config.batch_size_eval,
+          seed=155,
+      )
+    else:
+      transformations, metadata = datasets.transformations_from_config(
+          config.data
+      )
+      self._dataset = datasets.create_dataset(
+          config.data,
+          batch_size=config.batch_size_eval,
+          batch_size_eval=config.batch_size_eval,
+          transformations=transformations,
+          meta_data=metadata,
+          seed=155,
+      )
 
     self.eval_iter = self._dataset.valid_iter
     self.num_steps = (
@@ -338,19 +348,13 @@ class RetrievalEvaluation(base_eval.BaseEval):
 
     logging.info('Computing cell code metrics.')
     if self.config.cell_codes:
-      s2cells = lama_io.read_sharded_metadata_csv(
-          self.config.data.dirname,
-          self.config.data.locations.valid,
-          data_dir='datasets',
-          split='*',  # Also load train and valid cells.
-          file_name='grouped_s2cells.csv*',
-          max_workers=32,
-      )['s2cell'].to_list()
-      s2cells = [x.encode('utf-8') for x in s2cells]
+      # Build a gallery of candidate locations by binning the evaluation-set
+      # locations onto a regular lat/lng grid. Each ``cell_code`` is a grid cell
+      # size in degrees (coarser cells -> a smaller, coarser gallery).
+      gallery_latlngs = query_reps['latlng']
       for cell_code in self.config.cell_codes:
         modality = f'cell_codes_{cell_code}'
-        s2cells_encoded = utils.convert_s2cell_level(s2cells, cell_code)
-        latlngs = utils.s2cell_token_to_latlng(s2cells_encoded)
+        latlngs = utils.latlng_grid_gallery(gallery_latlngs, cell_code)
         representations = utils.get_latlng_representations(
             train_state,
             latlngs,

@@ -16,7 +16,7 @@
 
 import ml_collections
 
-from unigeoclip.scenic.configs import defaults
+from unigeoclip.configs import defaults
 
 
 def get_config(
