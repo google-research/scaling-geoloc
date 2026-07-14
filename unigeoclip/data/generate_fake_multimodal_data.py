@@ -124,9 +124,9 @@ def main(argv) -> None:
   # Sanity check: round-trip one example through TFDS.
   example = tfds.builder_from_directory(out_dir).as_data_source('train')[0]
   assert set(example.keys()) == {
-      'latlng', 'query', 'aerial', 'dsm', 'siglip_embeddings'
+      'latlng', 'query', 'aerial', 'dsm', 'text'
   }, example.keys()
-  assert set(example['query'].keys()) == {'image_pixels'}
+  assert set(example['query'].keys()) == {'image', 'latlng'}
   print('Round-trip OK. Example modalities:', sorted(example.keys()))
 
 

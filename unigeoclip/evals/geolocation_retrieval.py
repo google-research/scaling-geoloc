@@ -84,15 +84,15 @@ def get_all_representations(
       results[key].append(np.asarray(value))
 
     results['latlng'].append(np.asarray(batch['latlng']))
-    if 'center_ll' in batch['aerial']:
-      results['aerial_latlng'].append(np.asarray(batch['aerial']['center_ll']))
+    if 'latlng' in batch['aerial']:
+      results['aerial_latlng'].append(np.asarray(batch['aerial']['latlng']))
     else:
-      raise ValueError(f'No center_ll in aerial: {batch["aerial"].keys()}')
+      raise ValueError(f'No latlng in aerial: {batch["aerial"].keys()}')
 
-    if 'center_ll' in batch['dsm']:
-      results['dsm_latlng'].append(np.asarray(batch['dsm']['center_ll']))
+    if 'latlng' in batch['dsm']:
+      results['dsm_latlng'].append(np.asarray(batch['dsm']['latlng']))
     else:
-      raise ValueError(f'No center_ll in dsm: {batch["dsm"].keys()}')
+      raise ValueError(f'No latlng in dsm: {batch["dsm"].keys()}')
 
   return {k: np.concatenate(v, axis=0) for k, v in results.items()}
 

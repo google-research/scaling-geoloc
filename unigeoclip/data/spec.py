@@ -17,9 +17,10 @@
 Mirrors exactly the nested example produced by ``MultiModalDummyDataSource`` so
 the generated ArrayRecord shards round-trip through
 ``tfds.builder_from_directory(...).as_data_source(split)`` back into the same
-structure the contrastive model consumes (``query/image_pixels`` -> sv,
-``aerial/{rgb,center_ll}``, ``dsm/{dsm,center_ll}``, ``latlng``,
-``siglip_embeddings`` -> text).
+structure the contrastive model consumes. It follows the ``scaling_geoloc``
+per-modality ``{image, latlng}`` convention, extended with ``dsm`` and ``text``:
+``query/{image,latlng}`` -> sv, ``aerial/{image,latlng}``, ``dsm/{image,latlng}``,
+``text/siglip_embeddings`` -> text, plus the shared top-level ``latlng``.
 """
 
 import tensorflow as tf
@@ -34,25 +35,31 @@ def multimodal_feature_spec(
 ) -> dict:
   """Returns the nested TFDS feature spec for one multimodal example."""
   tensor = tfds.features.Tensor
+
+  def latlng() -> tfds.features.Tensor:
+    return tensor(shape=(2,), dtype=tf.float32)
+
   return {
-      'latlng': tensor(shape=(2,), dtype=tf.float32),
+      'latlng': latlng(),
       'query': {
-          'image_pixels': tensor(
-              shape=(sv_image_size, sv_image_size, 3),
-              dtype=tf.float32,
+          'image': tensor(
+              shape=(sv_image_size, sv_image_size, 3), dtype=tf.float32
           ),
+          'latlng': latlng(),
       },
       'aerial': {
-          'rgb': tensor(
+          'image': tensor(
               shape=(aerial_image_size, aerial_image_size, 3), dtype=tf.float32
           ),
-          'center_ll': tensor(shape=(2,), dtype=tf.float32),
+          'latlng': latlng(),
       },
       'dsm': {
-          'dsm': tensor(
+          'image': tensor(
               shape=(dsm_image_size, dsm_image_size), dtype=tf.float32
           ),
-          'center_ll': tensor(shape=(2,), dtype=tf.float32),
+          'latlng': latlng(),
       },
-      'siglip_embeddings': tensor(shape=(text_dim,), dtype=tf.float32),
+      'text': {
+          'siglip_embeddings': tensor(shape=(text_dim,), dtype=tf.float32),
+      },
   }

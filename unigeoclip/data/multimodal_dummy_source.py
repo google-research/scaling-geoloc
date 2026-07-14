@@ -21,11 +21,11 @@ what ``contrastive_merge.flatten_batch`` / ``process_batch`` consume after Grain
 batches a list of these dicts (leading batch dim ``B`` added by Grain):
 
     {
-      'latlng':  float32 [2],                      # top-level query lat/lng
-      'query':  {'image_pixels': float32 [Hs, Ws, 3]},  # -> sv
-      'aerial': {'rgb': float32 [Ha, Wa, 3], 'center_ll': float32 [2]},
-      'dsm':    {'dsm': float32 [Hd, Wd],    'center_ll': float32 [2]},
-      'siglip_embeddings': float32 [Dt],           # -> text (no text backbone)
+      'latlng':  float32 [2],                          # shared ground-truth lat/lng
+      'query':  {'image': float32 [Hs, Ws, 3], 'latlng': float32 [2]},  # -> sv
+      'aerial': {'image': float32 [Ha, Wa, 3], 'latlng': float32 [2]},
+      'dsm':    {'image': float32 [Hd, Wd],    'latlng': float32 [2]},
+      'text':   {'siglip_embeddings': float32 [Dt]},   # -> text (no text backbone)
     }
 
 Image pixels are float32 in ``[0, 1]`` (the normalization a real loader would
@@ -80,8 +80,8 @@ class MultiModalDummyDataSource(grain.RandomAccessDataSource):
 
     return {
         'latlng': latlng,
-        'query': {'image_pixels': sv},
-        'aerial': {'rgb': aerial, 'center_ll': latlng.copy()},
-        'dsm': {'dsm': dsm, 'center_ll': latlng.copy()},
-        'siglip_embeddings': siglip_embeddings,
+        'query': {'image': sv, 'latlng': latlng.copy()},
+        'aerial': {'image': aerial, 'latlng': latlng.copy()},
+        'dsm': {'image': dsm, 'latlng': latlng.copy()},
+        'text': {'siglip_embeddings': siglip_embeddings},
     }

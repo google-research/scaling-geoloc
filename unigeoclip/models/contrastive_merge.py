@@ -104,7 +104,7 @@ def check_multiple(
 def flatten_batch(batch: types.Batch, stride: int | None = None) -> types.Batch:
   """Lifts the street-view pixels to the top level for the encoders."""
   batch = misc.filter_batch_for_jit(batch)
-  sv_pixels = {'image_pixels': batch['query']['image_pixels']}
+  sv_pixels = {'image_pixels': batch['query']['image']}
 
   if stride is not None:
     sv_pixels = {
@@ -128,15 +128,15 @@ def process_batch(
     batch['sv'] = batch['image_pixels']
   if 'aerial' in modalities:
     batch['aerial_metadata'] = batch['aerial'].copy()
-    batch['aerial'] = batch['aerial_metadata']['rgb']
+    batch['aerial'] = batch['aerial_metadata']['image']
   if 'dsm' in modalities:
     batch['dsm_metadata'] = batch['dsm'].copy()
-    batch['dsm'] = jnp.expand_dims(batch['dsm_metadata']['dsm'], axis=-1)
+    batch['dsm'] = jnp.expand_dims(batch['dsm_metadata']['image'], axis=-1)
   if 'text' in modalities:
     if text_precomputed and 'area_embeddings' in batch:
       batch['text'] = batch['area_embeddings']
-    elif 'siglip_embeddings' in batch:
-      batch['text'] = batch['siglip_embeddings']
+    elif isinstance(batch.get('text'), dict) and 'siglip_embeddings' in batch['text']:
+      batch['text'] = batch['text']['siglip_embeddings']
   return batch
 
 
@@ -533,9 +533,9 @@ class ContrastiveModel(base.BaseModel):
       if modality_b == 'latlng':
         latlngs = batch['latlng']
       elif modality_b == 'aerial':
-        latlngs = batch['aerial']['center_ll']
+        latlngs = batch['aerial']['latlng']
       elif modality_b == 'dsm':
-        latlngs = batch['dsm']['center_ll']
+        latlngs = batch['dsm']['latlng']
       elif modality_b == 'text':
         latlngs = batch['latlng']
       else:
@@ -794,9 +794,9 @@ class ContrastiveModel(base.BaseModel):
         if modality == 'latlng':
           ll = batch['latlng']
         elif modality == 'aerial':
-          ll = batch['aerial']['center_ll']
+          ll = batch['aerial']['latlng']
         elif modality == 'dsm':
-          ll = batch['dsm']['center_ll']
+          ll = batch['dsm']['latlng']
         else:
           ll = batch['latlng']
         latlngs.append(ll)

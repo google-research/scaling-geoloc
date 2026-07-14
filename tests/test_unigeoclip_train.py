@@ -227,8 +227,8 @@ def test_generate_and_load_five_modalities(tmp_path):
 
   ds = datasets.build_dataset(cfg, batch_size=4, batch_size_eval=4, seed=0)
   batch = next(ds.train_iter())
-  assert 'image_pixels' in batch['query']                  # sv
-  assert {'rgb', 'center_ll'} <= set(batch['aerial'])       # aerial
-  assert {'dsm', 'center_ll'} <= set(batch['dsm'])          # dsm
-  assert 'latlng' in batch                                  # latlng
-  assert 'siglip_embeddings' in batch                       # text
+  assert {'image', 'latlng'} <= set(batch['query'])         # sv
+  assert {'image', 'latlng'} <= set(batch['aerial'])        # aerial
+  assert {'image', 'latlng'} <= set(batch['dsm'])           # dsm
+  assert 'latlng' in batch                                  # shared GT latlng
+  assert 'siglip_embeddings' in batch['text']               # text
