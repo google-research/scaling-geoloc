@@ -19,7 +19,6 @@ from absl import app
 from absl import flags
 from array_record.python import array_record_module as arw
 import numpy as np
-import tensorflow as tf
 import tensorflow_datasets as tfds
 
 from scaling_geoloc.data import dummy_data_source as dds
@@ -45,14 +44,14 @@ def _query_index_feature_spec() -> dict:
   """cell_idx + query adjacent fields, to be deep-merged at top level."""
   adj = {
       'adjacent_cell_idx': tfds.features.Tensor(
-          shape=(data_spec.NUM_ADJACENT_CELLS,), dtype=tf.int32
+          shape=(data_spec.NUM_ADJACENT_CELLS,), dtype=np.int32
       ),
       'adjacent_weights': tfds.features.Tensor(
-          shape=(data_spec.NUM_ADJACENT_CELLS,), dtype=tf.float32
+          shape=(data_spec.NUM_ADJACENT_CELLS,), dtype=np.float32
       ),
   }
   return {
-      'cell_idx': tfds.features.Tensor(shape=(), dtype=tf.int32),
+      'cell_idx': tfds.features.Tensor(shape=(), dtype=np.int32),
       'query': adj,
   }
 
@@ -62,10 +61,10 @@ def _aerial_index_feature_spec() -> dict:
   return {
       'aerial': {
           'adjacent_cell_idx': tfds.features.Tensor(
-              shape=(data_spec.NUM_ADJACENT_CELLS,), dtype=tf.int32
+              shape=(data_spec.NUM_ADJACENT_CELLS,), dtype=np.int32
           ),
           'adjacent_weights': tfds.features.Tensor(
-              shape=(data_spec.NUM_ADJACENT_CELLS,), dtype=tf.float32
+              shape=(data_spec.NUM_ADJACENT_CELLS,), dtype=np.float32
           ),
       }
   }

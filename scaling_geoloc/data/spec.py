@@ -33,7 +33,7 @@ See :class:`QuerySpec` and :class:`AerialSpec` for the per-modality fields.
 
 import dataclasses
 
-import tensorflow as tf
+import numpy as np
 import tensorflow_datasets as tfds
 
 
@@ -54,11 +54,11 @@ class QuerySpec:
     return {
         'image': tfds.features.Image(
             shape=(self.image_size, self.image_size, 3),
-            dtype=tf.uint8,
+            dtype=np.uint8,
             encoding_format=self.encoding_format,
         ),
         # GPS position of the camera (WGS-84 degrees).
-        'latlng': tfds.features.Tensor(shape=(2,), dtype=tf.float32),
+        'latlng': tfds.features.Tensor(shape=(2,), dtype=np.float32),
     }
 
 
@@ -79,11 +79,11 @@ class AerialSpec:
     return {
         'image': tfds.features.Image(
             shape=(self.image_size, self.image_size, 3),
-            dtype=tf.uint8,
+            dtype=np.uint8,
             encoding_format=self.encoding_format,
         ),
         # GPS coordinates of the tile centre (WGS-84 degrees).
-        'latlng': tfds.features.Tensor(shape=(2,), dtype=tf.float32),
+        'latlng': tfds.features.Tensor(shape=(2,), dtype=np.float32),
     }
 
 
@@ -138,13 +138,13 @@ class ModalityIndexSpec:
 
   def spec(self) -> dict:
     return {
-        'cell_idx': tfds.features.Tensor(shape=(), dtype=tf.int32),
+        'cell_idx': tfds.features.Tensor(shape=(), dtype=np.int32),
         self.modality: {
             'adjacent_cell_idx': tfds.features.Tensor(
-                shape=(NUM_ADJACENT_CELLS,), dtype=tf.int32
+                shape=(NUM_ADJACENT_CELLS,), dtype=np.int32
             ),
             'adjacent_weights': tfds.features.Tensor(
-                shape=(NUM_ADJACENT_CELLS,), dtype=tf.float32
+                shape=(NUM_ADJACENT_CELLS,), dtype=np.float32
             ),
         },
     }
@@ -184,14 +184,14 @@ class TrainExampleSpec:
   def spec(self) -> dict:
     adjacent = {
         'adjacent_cell_idx': tfds.features.Tensor(
-            shape=(NUM_ADJACENT_CELLS,), dtype=tf.int32
+            shape=(NUM_ADJACENT_CELLS,), dtype=np.int32
         ),
         'adjacent_weights': tfds.features.Tensor(
-            shape=(NUM_ADJACENT_CELLS,), dtype=tf.float32
+            shape=(NUM_ADJACENT_CELLS,), dtype=np.float32
         ),
     }
     return {
-        'cell_idx': tfds.features.Tensor(shape=(), dtype=tf.int32),
+        'cell_idx': tfds.features.Tensor(shape=(), dtype=np.int32),
         'query': {**self.query.spec(), **adjacent},
         'aerial': {**self.aerial.spec(), **adjacent},
     }
