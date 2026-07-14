@@ -22,7 +22,7 @@ batches a list of these dicts (leading batch dim ``B`` added by Grain):
 
     {
       'latlng':  float32 [2],                      # top-level query lat/lng
-      'query':  {'views': {'image_pixels': float32 [V, Hs, Ws, 3]}},  # -> sv
+      'query':  {'image_pixels': float32 [Hs, Ws, 3]},  # -> sv
       'aerial': {'rgb': float32 [Ha, Wa, 3], 'center_ll': float32 [2]},
       'dsm':    {'dsm': float32 [Hd, Wd],    'center_ll': float32 [2]},
       'siglip_embeddings': float32 [Dt],           # -> text (no text backbone)
@@ -46,7 +46,6 @@ class MultiModalDummyDataSource(grain.RandomAccessDataSource):
 
   Attributes:
     num_examples: Number of examples the source exposes.
-    num_views: Number of street-view crops per example (``V`` above).
     sv_image_size: Street-view image height/width.
     aerial_image_size: Aerial tile height/width.
     dsm_image_size: DSM tile height/width.
@@ -54,7 +53,6 @@ class MultiModalDummyDataSource(grain.RandomAccessDataSource):
   """
 
   num_examples: int = 64
-  num_views: int = 1
   sv_image_size: int = 32
   aerial_image_size: int = 32
   dsm_image_size: int = 32
@@ -69,7 +67,7 @@ class MultiModalDummyDataSource(grain.RandomAccessDataSource):
     latlng = rng.uniform([-90.0, -180.0], [90.0, 180.0]).astype(np.float32)
 
     sv = rng.random(
-        (self.num_views, self.sv_image_size, self.sv_image_size, 3),
+        (self.sv_image_size, self.sv_image_size, 3),
         dtype=np.float32,
     )
     aerial = rng.random(
@@ -82,7 +80,7 @@ class MultiModalDummyDataSource(grain.RandomAccessDataSource):
 
     return {
         'latlng': latlng,
-        'query': {'views': {'image_pixels': sv}},
+        'query': {'image_pixels': sv},
         'aerial': {'rgb': aerial, 'center_ll': latlng.copy()},
         'dsm': {'dsm': dsm, 'center_ll': latlng.copy()},
         'siglip_embeddings': siglip_embeddings,

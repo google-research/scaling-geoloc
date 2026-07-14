@@ -44,7 +44,6 @@ def _data() -> ml_collections.ConfigDict:
   cfg.data_dir = 'datasets'
   cfg.num_train_examples = 64
   cfg.num_valid_examples = 64
-  cfg.num_views = 1
   cfg.sv_image_size = 224
   cfg.aerial_image_size = 256
   cfg.dsm_image_size = 256

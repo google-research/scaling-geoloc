@@ -63,7 +63,6 @@ def write_multimodal_dataset(
     num_train: int = 64,
     num_valid: int = 16,
     *,
-    num_views: int = 1,
     sv_image_size: int = 224,
     aerial_image_size: int = 256,
     dsm_image_size: int = 256,
@@ -72,7 +71,6 @@ def write_multimodal_dataset(
   """Writes the 5-modality ArrayRecord shards + TFDS metadata to ``out_dir``."""
   os.makedirs(out_dir, exist_ok=True)
   source_kwargs = dict(
-      num_views=num_views,
       sv_image_size=sv_image_size,
       aerial_image_size=aerial_image_size,
       dsm_image_size=dsm_image_size,
@@ -113,7 +111,6 @@ def main(argv) -> None:
       os.path.join(FLAGS.output_dir, FLAGS.location),
       num_train=FLAGS.num_train,
       num_valid=FLAGS.num_valid,
-      num_views=FLAGS.num_views,
       sv_image_size=FLAGS.sv_image_size,
       aerial_image_size=FLAGS.aerial_image_size,
       dsm_image_size=FLAGS.dsm_image_size,
@@ -129,7 +126,7 @@ def main(argv) -> None:
   assert set(example.keys()) == {
       'latlng', 'query', 'aerial', 'dsm', 'siglip_embeddings'
   }, example.keys()
-  assert set(example['query']['views'].keys()) == {'image_pixels'}
+  assert set(example['query'].keys()) == {'image_pixels'}
   print('Round-trip OK. Example modalities:', sorted(example.keys()))
 
 
@@ -138,7 +135,6 @@ if __name__ == '__main__':
   flags.DEFINE_string('location', 'area_summaries', 'Location subdirectory name.')
   flags.DEFINE_integer('num_train', 64, 'Number of train examples.')
   flags.DEFINE_integer('num_valid', 16, 'Number of valid examples.')
-  flags.DEFINE_integer('num_views', 1, 'Street-view crops per example.')
   flags.DEFINE_integer('sv_image_size', 224, 'Street-view image size.')
   flags.DEFINE_integer('aerial_image_size', 256, 'Aerial tile size.')
   flags.DEFINE_integer('dsm_image_size', 256, 'DSM tile size.')

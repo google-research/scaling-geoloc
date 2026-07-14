@@ -17,7 +17,7 @@
 Mirrors exactly the nested example produced by ``MultiModalDummyDataSource`` so
 the generated ArrayRecord shards round-trip through
 ``tfds.builder_from_directory(...).as_data_source(split)`` back into the same
-structure the contrastive model consumes (``query/views/image_pixels`` -> sv,
+structure the contrastive model consumes (``query/image_pixels`` -> sv,
 ``aerial/{rgb,center_ll}``, ``dsm/{dsm,center_ll}``, ``latlng``,
 ``siglip_embeddings`` -> text).
 """
@@ -27,7 +27,6 @@ import tensorflow_datasets as tfds
 
 
 def multimodal_feature_spec(
-    num_views: int = 1,
     sv_image_size: int = 224,
     aerial_image_size: int = 256,
     dsm_image_size: int = 256,
@@ -38,12 +37,10 @@ def multimodal_feature_spec(
   return {
       'latlng': tensor(shape=(2,), dtype=tf.float32),
       'query': {
-          'views': {
-              'image_pixels': tensor(
-                  shape=(num_views, sv_image_size, sv_image_size, 3),
-                  dtype=tf.float32,
-              ),
-          },
+          'image_pixels': tensor(
+              shape=(sv_image_size, sv_image_size, 3),
+              dtype=tf.float32,
+          ),
       },
       'aerial': {
           'rgb': tensor(

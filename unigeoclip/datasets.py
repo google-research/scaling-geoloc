@@ -377,7 +377,6 @@ def create_multimodal_dataset(
     )
   else:
     source_kwargs = dict(
-        num_views=dataset_config.get('num_views', 1),
         sv_image_size=dataset_config.get('sv_image_size', 224),
         aerial_image_size=dataset_config.get('aerial_image_size', 256),
         dsm_image_size=dataset_config.get('dsm_image_size', 256),

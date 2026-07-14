@@ -167,7 +167,6 @@ def _geoloc_data_config() -> ml_collections.ConfigDict:
   cfg.location = config_dict.placeholder(str)  # unset -> dummy multimodal source
   cfg.num_train_examples = 8
   cfg.num_valid_examples = 8
-  cfg.num_views = 1
   cfg.sv_image_size = train_test.IMAGE_SIZE
   cfg.aerial_image_size = train_test.IMAGE_SIZE
   cfg.dsm_image_size = train_test.IMAGE_SIZE

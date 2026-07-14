@@ -145,7 +145,6 @@ def data_config(preset: str) -> ml_collections.ConfigDict:
   cfg.valid_split = 'valid'
   cfg.num_train_examples = 1024
   cfg.num_valid_examples = 256
-  cfg.num_views = 1
   cfg.sv_image_size = img
   cfg.aerial_image_size = img
   cfg.dsm_image_size = img

@@ -102,23 +102,20 @@ def check_multiple(
 
 
 def flatten_batch(batch: types.Batch, stride: int | None = None) -> types.Batch:
-  """Simplifies a batch by removing unnecessary dimensions."""
+  """Lifts the street-view pixels to the top level for the encoders."""
   batch = misc.filter_batch_for_jit(batch)
-  batch_views = jax.tree.map(
-      lambda x: x[:, 0],
-      batch['query']['views'],
-  )
+  sv_pixels = {'image_pixels': batch['query']['image_pixels']}
 
   if stride is not None:
-    batch_views = {
+    sv_pixels = {
         k: (
             misc.crop_to_multiple(v, stride)
             if (isinstance(v, jnp.ndarray) and v.ndim == 4)
             else v
         )
-        for k, v in batch_views.items()
+        for k, v in sv_pixels.items()
     }
-  return {**batch, **batch_views}
+  return {**batch, **sv_pixels}
 
 
 def process_batch(
