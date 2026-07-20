@@ -26,11 +26,11 @@ from typing import Any
 from absl import logging
 from clu import metric_writers
 import jax
+import jax.numpy as jnp
 import ml_collections
 import numpy as np
+import optax
 from scenic.train_lib import train_utils
-import tensorflow as tf
-from tensorflow.keras import optimizers
 
 from unigeoclip import datasets
 from unigeoclip.evals import classif_eval
@@ -64,38 +64,75 @@ def get_all_representations(
   )
 
 
-def reshape_output(
-    y_pred: tf.Tensor, num_classes: int, patch_size: int
-) -> tf.Tensor:
-  """Applies the custom reshaping and transposing logic."""
-  batch_size = tf.shape(y_pred)[0]
-  height = tf.shape(y_pred)[1]
-  width = tf.shape(y_pred)[2]
+def _depth_to_space(
+    logits: jnp.ndarray, num_classes: int, patch_size: int
+) -> jnp.ndarray:
+  """Upsamples per-token logits to per-pixel logits (a pixel shuffle).
 
-  y_pred = tf.reshape(
-      y_pred, (batch_size, height, width, patch_size, patch_size, num_classes)
-  )
-  y_pred = tf.transpose(y_pred, perm=[0, 1, 3, 2, 4, 5])
-  y_pred = tf.reshape(
-      y_pred, (batch_size, height * patch_size, width, patch_size, num_classes)
-  )
-  y_pred = tf.reshape(
-      y_pred, (batch_size, height * patch_size, width * patch_size, num_classes)
-  )
-  return y_pred
+  ``[B, h, w, num_classes * patch_size**2]`` ->
+  ``[B, h * patch_size, w * patch_size, num_classes]``, so each token expands
+  into a ``patch_size x patch_size`` block and the prediction lines up with the
+  label resolution.
+  """
+  b, h, w, _ = logits.shape
+  x = logits.reshape(b, h, w, patch_size, patch_size, num_classes)
+  x = jnp.transpose(x, (0, 1, 3, 2, 4, 5))
+  return x.reshape(b, h * patch_size, w * patch_size, num_classes)
 
 
-def get_loss_fn(
-    y_true: tf.Tensor, y_pred: tf.Tensor, num_classes: int
-) -> tf.Tensor:
-  # Flatten both sides to (pixels, classes) / (pixels,) so the per-pixel sparse
-  # cross-entropy lines up (y_true carries -1 for the ignored class).
-  y_pred = tf.reshape(y_pred, (-1, num_classes))
-  y_true = tf.reshape(y_true, (-1,))
-  loss = tf.keras.losses.SparseCategoricalCrossentropy(
-      from_logits=True, ignore_class=-1
+def _seg_logits(
+    params: Mapping[str, jnp.ndarray],
+    reps: jnp.ndarray,
+    num_classes: int,
+    patch_size: int,
+) -> jnp.ndarray:
+  """Linear head + pixel shuffle: ``[B, h, w, D]`` -> ``[B, H, W, num_classes]``."""
+  tokens = reps @ params['kernel'] + params['bias']
+  return _depth_to_space(tokens, num_classes, patch_size)
+
+
+def _seg_loss(
+    params: Mapping[str, jnp.ndarray],
+    reps: jnp.ndarray,
+    labels: jnp.ndarray,
+    num_classes: int,
+    patch_size: int,
+) -> jnp.ndarray:
+  """Per-pixel softmax cross-entropy, masking the ignored class (label -1)."""
+  logits = _seg_logits(params, reps, num_classes, patch_size).reshape(
+      -1, num_classes
   )
-  return loss(y_true, y_pred)
+  labels = labels.reshape(-1)
+  mask = labels >= 0
+  ce = optax.softmax_cross_entropy_with_integer_labels(
+      logits, jnp.where(mask, labels, 0)
+  )
+  return jnp.sum(ce * mask) / jnp.maximum(jnp.sum(mask), 1.0)
+
+
+def _confusion_matrix(
+    y_true: np.ndarray, y_pred: np.ndarray, num_classes: int
+) -> np.ndarray:
+  """Confusion matrix (rows = true, cols = pred) over the given pixels."""
+  k = y_true.astype(np.int64) * num_classes + y_pred.astype(np.int64)
+  return np.bincount(k, minlength=num_classes**2).reshape(
+      num_classes, num_classes
+  )
+
+
+def _mean_iou(cm: np.ndarray) -> float:
+  """Mean IoU, averaged over classes that appear in labels or predictions."""
+  tp = np.diag(cm).astype(np.float64)
+  denom = cm.sum(axis=0) + cm.sum(axis=1) - tp
+  valid = denom > 0
+  iou = np.where(valid, tp / np.maximum(denom, 1.0), 0.0)
+  return float(iou[valid].mean()) if valid.any() else 0.0
+
+
+def _pixel_accuracy(cm: np.ndarray) -> float:
+  """Fraction of correctly classified (non-ignored) pixels."""
+  total = cm.sum()
+  return float(np.diag(cm).sum() / total) if total > 0 else 0.0
 
 
 def get_metrics(
@@ -109,55 +146,61 @@ def get_metrics(
     num_classes: int = 10,
     n_epochs: int = 200,
     patch_size: int = 2,
+    seed: int = 0,
 ) -> tuple[float, float]:
-  """Trains a linear DSM segmentation head and returns (mIoU, accuracy)."""
-  optim = optimizers.SGD(learning_rate=learning_rate)
+  """Trains a linear DSM segmentation head in JAX and returns (mIoU, accuracy).
 
-  module_list = [
-      tf.keras.layers.Dense(num_classes * patch_size * patch_size),
-      tf.keras.layers.Lambda(
-          partial(
-              reshape_output, num_classes=num_classes, patch_size=patch_size
-          )
+  The head is a single linear layer per ViT token whose output is pixel-shuffled
+  up to the label resolution, trained with SGD on masked per-pixel cross-entropy.
+  """
+  out_dim = num_classes * patch_size * patch_size
+  key = jax.random.PRNGKey(seed)
+  key, init_key = jax.random.split(key)
+  params = {
+      'kernel': jax.nn.initializers.glorot_uniform()(
+          init_key, (db_reps.shape[-1], out_dim)
       ),
-  ]
-  model = tf.keras.Sequential(module_list)
+      'bias': jnp.zeros((out_dim,)),
+  }
 
-  model.compile(
-      optimizer=optim,
-      loss=partial(get_loss_fn, num_classes=num_classes),
-      metrics=[
-          ArgmaxMetricWrapper(
-              tf.keras.metrics.MeanIoU(
-                  num_classes=num_classes, ignore_class=-1
-              ),
-              name='mIoU',
-          ),
-          Acc(name='acc'),
-      ],
+  optimizer = optax.sgd(learning_rate)
+  opt_state = optimizer.init(params)
+  loss_fn = partial(_seg_loss, num_classes=num_classes, patch_size=patch_size)
+
+  @jax.jit
+  def train_step(params, opt_state, reps, labels):
+    grads = jax.grad(loss_fn)(params, reps, labels)
+    updates, opt_state = optimizer.update(grads, opt_state, params)
+    return optax.apply_updates(params, updates), opt_state
+
+  predict = jax.jit(
+      partial(_seg_logits, num_classes=num_classes, patch_size=patch_size)
   )
 
-  dataset = tf.data.Dataset.from_tensor_slices((db_reps, db_labels))
-  dataset = (
-      dataset.batch(batch_size)
-      .shuffle(buffer_size=1024, reshuffle_each_iteration=True)
-      .prefetch(tf.data.AUTOTUNE)
-  )
+  db_reps = jnp.asarray(db_reps)
+  db_labels = jnp.asarray(db_labels)
+  num_examples = db_reps.shape[0]
+  for _ in range(n_epochs):
+    key, perm_key = jax.random.split(key)
+    perm = jax.random.permutation(perm_key, num_examples)
+    for start in range(0, num_examples, batch_size):
+      idx = perm[start : start + batch_size]
+      params, opt_state = train_step(
+          params, opt_state, db_reps[idx], db_labels[idx]
+      )
 
-  _ = model.fit(
-      dataset,
-      epochs=n_epochs,
-      batch_size=batch_size,
-      validation_split=0.0,
-      verbose=False,
-  )
-  predict_dataset = tf.data.Dataset.from_tensor_slices(
-      (query_reps, query_labels)
-  )
-  predict_dataset = predict_dataset.batch(batch_size)
+  # Predict on the query set (batched) and accumulate a confusion matrix.
+  query_reps = jnp.asarray(query_reps)
+  cm = np.zeros((num_classes, num_classes), dtype=np.int64)
+  for start in range(0, query_reps.shape[0], batch_size):
+    preds = np.asarray(
+        jnp.argmax(predict(params, query_reps[start : start + batch_size]), -1)
+    )
+    labels = np.asarray(query_labels[start : start + batch_size])
+    valid = labels >= 0
+    cm += _confusion_matrix(labels[valid], preds[valid], num_classes)
 
-  results = model.evaluate(predict_dataset, verbose=False)
-  return results[1], results[2]
+  return _mean_iou(cm), _pixel_accuracy(cm)
 
 
 def compute_metrics(
@@ -289,72 +332,3 @@ class DsmSegmentationEvaluation(base_eval.BaseEval):
     )
 
     return {}, eval_metrics, {}
-
-
-class ArgmaxMetricWrapper(tf.keras.metrics.Metric):
-  """A wrapper that applies argmax to predictions before updating a metric."""
-
-  def __init__(self, metric, name='argmax_metric_wrapper', **kwargs):
-    super().__init__(name=name, **kwargs)
-    # The metric to wrap (e.g., an instance of MeanIoU)
-    self.metric = metric
-
-  def update_state(
-      self,
-      y_true: tf.Tensor,
-      y_pred: tf.Tensor,
-      sample_weight: tf.Tensor | None = None,
-  ) -> None:
-    # Convert model predictions (logits/probabilities) to class indices
-    y_pred_argmax = tf.argmax(y_pred, axis=-1)
-
-    # Pass the true labels and the class predictions to the wrapped metric
-    self.metric.update_state(y_true, y_pred_argmax, sample_weight)
-
-  def result(self) -> tf.Tensor:
-    return self.metric.result()
-
-  def reset_state(self) -> None:
-    self.metric.reset_state()
-
-
-class Acc(tf.keras.metrics.Metric):
-  """A custom accuracy metric for semantic segmentation that ignores a specific class."""
-
-  def __init__(self, name='masked_accuracy', ignore_class_id=-1, **kwargs):
-    super().__init__(name=name, **kwargs)
-    self.ignore_class_id = ignore_class_id
-
-    self.total_correct = self.add_weight(
-        name='total_correct', initializer='zeros', dtype=tf.float32
-    )
-    self.total_counted = self.add_weight(
-        name='total_counted', initializer='zeros', dtype=tf.float32
-    )
-
-  def update_state(
-      self,
-      y_true: tf.Tensor,
-      y_pred: tf.Tensor,
-      sample_weight: tf.Tensor | None = None,
-  ) -> None:
-    y_pred_labels = tf.argmax(y_pred, axis=-1)
-    y_true = tf.cast(y_true, y_pred_labels.dtype)
-
-    mask = tf.not_equal(y_true, self.ignore_class_id)
-    correct_predictions = tf.equal(y_true, y_pred_labels)
-
-    masked_correct = tf.logical_and(correct_predictions, mask)
-
-    self.total_correct.assign_add(
-        tf.reduce_sum(tf.cast(masked_correct, tf.float32))
-    )
-
-    self.total_counted.assign_add(tf.reduce_sum(tf.cast(mask, tf.float32)))
-
-  def result(self) -> tf.Tensor:
-    return tf.math.divide_no_nan(self.total_correct, self.total_counted)
-
-  def reset_state(self) -> None:
-    self.total_correct.assign(0.0)
-    self.total_counted.assign(0.0)

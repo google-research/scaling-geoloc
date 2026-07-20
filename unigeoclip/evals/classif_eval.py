@@ -27,12 +27,12 @@ from typing import Any
 from absl import logging
 from clu import metric_writers
 import jax
+import jax.numpy as jnp
 import ml_collections
 import numpy as np
+import optax
 from scenic.dataset_lib import dataset_utils
 from scenic.train_lib import train_utils
-import tensorflow as tf
-from tensorflow.keras import optimizers
 
 from unigeoclip import datasets
 from unigeoclip.models import contrastive_merge
@@ -124,52 +124,57 @@ def get_linear_probing_metrics(
     learning_rate: float = 0.002,
     num_classes: int = 2,
     n_epochs: int = 500,
+    seed: int = 0,
 ) -> float:
-  """Computes linear probing metrics."""
+  """Trains a linear classification probe in JAX and returns accuracy."""
+  binary = num_classes == 2
+  out_dim = 1 if binary else num_classes
+  key = jax.random.PRNGKey(seed)
+  key, init_key = jax.random.split(key)
+  params = {
+      'kernel': jax.nn.initializers.glorot_uniform()(
+          init_key, (db_reps.shape[-1], out_dim)
+      ),
+      'bias': jnp.zeros((out_dim,)),
+  }
 
-  optim = optimizers.AdamW(learning_rate=learning_rate)
+  optimizer = optax.adamw(learning_rate)
+  opt_state = optimizer.init(params)
 
-  module_list = []
-  if num_classes == 2:
-    module_list.append(tf.keras.layers.Dense(1, activation='sigmoid'))
+  def loss_fn(params, reps, labels):
+    logits = reps @ params['kernel'] + params['bias']
+    if binary:
+      return optax.sigmoid_binary_cross_entropy(
+          logits[:, 0], labels.astype(logits.dtype)
+      ).mean()
+    return optax.softmax_cross_entropy_with_integer_labels(
+        logits, labels.astype(jnp.int32)
+    ).mean()
+
+  @jax.jit
+  def train_step(params, opt_state, reps, labels):
+    grads = jax.grad(loss_fn)(params, reps, labels)
+    updates, opt_state = optimizer.update(grads, opt_state, params)
+    return optax.apply_updates(params, updates), opt_state
+
+  db_reps = jnp.asarray(db_reps)
+  db_labels = jnp.asarray(db_labels).reshape(-1)
+  num_examples = db_reps.shape[0]
+  for _ in range(n_epochs):
+    key, perm_key = jax.random.split(key)
+    perm = jax.random.permutation(perm_key, num_examples)
+    for start in range(0, num_examples, batch_size):
+      idx = perm[start : start + batch_size]
+      params, opt_state = train_step(
+          params, opt_state, db_reps[idx], db_labels[idx]
+      )
+
+  logits = jnp.asarray(query_reps) @ params['kernel'] + params['bias']
+  if binary:
+    preds = (jax.nn.sigmoid(logits[:, 0]) > 0.5).astype(jnp.int32)
   else:
-    module_list.append(tf.keras.layers.Dense(num_classes, activation='softmax'))
-  model = tf.keras.Sequential(module_list)
-
-  if num_classes == 2:
-    loss = 'binary_crossentropy'
-  else:
-    loss = 'sparse_categorical_crossentropy'
-
-  model.compile(
-      optimizer=optim,
-      loss=loss,
-      metrics=['accuracy'],
-  )
-
-  dataset = tf.data.Dataset.from_tensor_slices((db_reps, db_labels))
-  dataset = (
-      dataset.batch(batch_size)
-      .shuffle(buffer_size=1024, reshuffle_each_iteration=True)
-      .prefetch(tf.data.AUTOTUNE)
-  )
-
-  _ = model.fit(
-      dataset,
-      epochs=n_epochs,
-      batch_size=batch_size,
-      validation_split=0.0,
-      verbose=False,
-  )
-  predict_dataset = tf.data.Dataset.from_tensor_slices(query_reps)
-  predict_dataset = predict_dataset.batch(batch_size)
-
-  probabilities = model.predict(predict_dataset, verbose=False)
-  if num_classes == 2:
-    predicted_classes = (probabilities > 0.5).astype(int)
-  else:
-    predicted_classes = probabilities.argmax(axis=-1)
-  return float(np.mean(predicted_classes.squeeze() == query_labels))
+    preds = jnp.argmax(logits, axis=-1)
+  return float(np.mean(np.asarray(preds) == np.asarray(query_labels).reshape(-1)))
 
 
 def compute_metrics(

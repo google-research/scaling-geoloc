@@ -86,6 +86,28 @@ def normalize_features(
   return db_features / norm, query_features / norm
 
 
+def _accumulate_confusion(
+    cm: np.ndarray, y_true: np.ndarray, y_pred: np.ndarray, num_classes: int
+) -> None:
+  """Adds a batch of (true, pred) pixels into a confusion matrix in place."""
+  valid = (y_true >= 0) & (y_true < num_classes)
+  k = y_true[valid].astype(np.int64) * num_classes + y_pred[valid].astype(
+      np.int64
+  )
+  cm += np.bincount(k, minlength=num_classes**2).reshape(
+      num_classes, num_classes
+  )
+
+
+def _mean_iou(cm: np.ndarray) -> float:
+  """Mean IoU over present classes (matches ``tf.keras.metrics.MeanIoU``)."""
+  tp = np.diag(cm).astype(np.float64)
+  denom = cm.sum(axis=0) + cm.sum(axis=1) - tp
+  present = denom > 0
+  iou = np.where(present, tp / np.maximum(denom, 1.0), 0.0)
+  return float(iou[present].mean()) if present.any() else 0.0
+
+
 def get_dtp_metrics(
     query_reps: np.ndarray,
     query_labels: np.ndarray,
@@ -176,18 +198,16 @@ def get_dtp_metrics(
   final_state = flax.jax_utils.unreplicate(replicated_state)
 
   test_iter_full = tfds.as_numpy(test_ds_full)
-  iou_metric = tf.keras.metrics.MeanIoU(
-      num_classes=num_classes, name='mean_iou'
-  )
+  cm = np.zeros((num_classes, num_classes), dtype=np.int64)
 
   for batch_tuple in test_iter_full:
     *inputs, targets = batch_tuple
-    batch = (inputs, targets)
+    predictions, true_labels = predict_step(final_state, (inputs, targets))
+    _accumulate_confusion(
+        cm, np.asarray(true_labels), np.asarray(predictions), num_classes
+    )
 
-    predictions, true_labels = predict_step(final_state, batch)
-    iou_metric.update_state(true_labels, predictions)
-
-  return iou_metric.result().numpy()
+  return _mean_iou(cm)
 
 
 def predict_step(
