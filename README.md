@@ -240,8 +240,8 @@ XLA_FLAGS=--xla_force_host_platform_device_count=2 python -m pytest tests/
 
 ## UniGeoCLIP
 
-[`unigeoclip/`](unigeoclip/README.md) contains the UniGeoCLIP paper
-(arXiv 2604.11668), built on top of this library: a multimodal contrastive model
+[`unigeoclip/`](unigeoclip/README.md) contains the [UniGeoCLIP paper](https://gastruc.github.io/unigeoclip),
+built on top of this library: a multimodal contrastive model
 (street-view / aerial / DSM / text / location) and a downstream evaluation
 harness so follow-up work can benchmark their own encoders on **pv4ger**,
 **chesapeake** and **PDFM**. Like the rest of the repo, it runs end to end on
