@@ -1,0 +1,43 @@
+# Core ML
+jax>=0.6.2
+flax>=0.10.7
+optax>=0.2.7
+chex>=0.1.90
+jaxtyping>=0.3.2
+
+# Scenic training framework
+scenic @ git+https://github.com/google-research/scenic.git
+
+# Data
+grain>=0.2.13
+array-record>=0.8.1
+tensorflow-datasets>=4.9.9
+
+# Config
+ml-collections>=1.1.0
+
+# Logging / metrics
+clu>=0.0.12
+
+# Vision / geo utilities
+dm-pix>=0.4.4
+etils>=1.13.0
+jaxcam>=0.3.0
+pyproj>=3.7.1
+
+# General
+numpy
+pandas>=2.0
+scikit-learn>=1.6
+matplotlib>=3.5
+tqdm>=4.67
+pyyaml>=5.4
+
+# UniGeoCLIP downstream datasets / evals
+h5py>=3.10          # pv4ger + chesapeake .hdf5 readers
+rasterio>=1.3       # MDAS DSM/label GeoTIFF readers
+
+# big_vision provides the SigLIP2 sv/aerial/text backbones, which the UniGeoCLIP
+# multimodal model imports. Like scenic it is a source-tree package — install
+# from git, or put a checkout on PYTHONPATH.
+big_vision @ git+https://github.com/google-research/big_vision.git
