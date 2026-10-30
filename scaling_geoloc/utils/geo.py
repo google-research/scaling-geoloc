@@ -214,7 +214,7 @@ def bilinear_interpolation_weights(
     else:
       s, t = st
       weights = np.array(
-          [(1 - t) * (1 - s), t * (1 - s), s * (1 - t), t * s]
+          [(1 - t) * (1 - s), s * (1 - t), t * (1 - s), t * s]
       )
   else:
     # Here we only have 3 neighbors. This appears at the corners of the S2 cube.
